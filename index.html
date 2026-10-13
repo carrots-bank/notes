@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Notes</title>
+<link rel="stylesheet" href="style.css">
+<style>
+  .lock { max-width: 380px; margin: 12vh auto; padding: 0 16px; }
+  .lock form { display: grid; gap: 12px; }
+  #sidebar li { display: flex; align-items: flex-start; gap: 4px; }
+  #sidebar li a:first-child { flex: 1; }
+  #sidebar li a.lang { flex: none; font-size: .75em; font-weight: 600; padding: 2px 7px; margin-top: 4px; border: 1px solid currentColor; border-radius: 6px; opacity: .8; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js"></script>
+</head>
+<body>
+<header class="topbar">
+  <button id="menu" class="icon" aria-label="Toggle contents" hidden>☰</button>
+  <a href="#/" class="brand">Notes</a>
+  <span class="spacer"></span>
+  <button id="logout" class="btn ghost" hidden>Lock</button>
+</header>
+<div class="layout" id="app" hidden>
+  <nav id="sidebar" aria-label="Contents"></nav>
+  <main id="main"></main>
+</div>
+<section class="panel lock" id="lock">
+  <h1>Notes</h1>
+  <form id="unlock">
+    <label>Password <input name="pw" type="password" autocomplete="current-password" required autofocus></label>
+    <label class="check"><input type="checkbox" name="remember" checked> Remember on this device</label>
+    <button class="btn primary" type="submit">Open</button>
+    <p id="msg" class="muted"></p>
+  </form>
+</section>
+<script src="viewer.js"></script>
+</body>
+</html>
