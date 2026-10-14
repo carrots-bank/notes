@@ -1,5 +1,10 @@
 {
- "salt": "NvUTtEXqSAfas8ta+GO52Q==",
+ "salt": "m+Zt2d5IyQbI2NcKdiUwZA==",
  "iterations": 600000,
- "check": "OGIgTsI6Tg4/lX6ADAuj7tgbKeS665FJN3e8gQkH"
+ "keys": [
+  "tHrwGJog0r4RXL005ORV3EUsEBaXZUcCCwx2Gp2tAUSQKzUbP3+j+7qzB46+FzUrOVJaE1CY5wzFddL4",
+  "3Q0fmBmpvWc8nwluB/k5efaBqoAdh3Nc5gVETy6Mt8XN0d6KHZaue1fkSTEX5XHvHqnDR4FfcP8TG4Ux",
+  "OWRU0qz+lim+/DJu3Edjju6RDq5Nw//KJnP/0sCWKltJ45YpbJXWZETWz9nGpSd6tjEZOn4EyV3MTT0E",
+  "i8tIfTJRgGL75Rc8qWEn+IV0b3u7Tx97Wi8FEKBgBMmehS2ptp0d+y/KFyCPEsTdaeF2mGFWMCveSLDQ"
+ ]
 }

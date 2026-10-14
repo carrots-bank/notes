@@ -1,5 +1,6 @@
 // Read-only viewer for the encrypted library (see lecturenotes/site.py for the format).
-// Every file is nonce(12) || AES-256-GCM ciphertext; the key is PBKDF2-SHA256(password, salt) (first 32 bytes).
+// Every file is nonce(12) || AES-256-GCM ciphertext under one content key. site.json holds that key wrapped
+// once per person, each under PBKDF2-SHA256(password, salt); we try each wrapped copy with the given password.
 const $ = (s, el = document) => el.querySelector(s);
 const main = $("#main"), sidebar = $("#sidebar");
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -18,8 +19,14 @@ const b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
 async function deriveKey(password, site) {
   const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveBits"]);
   const bits = await crypto.subtle.deriveBits(
-    { name: "PBKDF2", hash: "SHA-256", salt: b64(site.salt), iterations: site.iterations }, base, 512);
-  return new Uint8Array(bits).slice(0, 32);
+    { name: "PBKDF2", hash: "SHA-256", salt: b64(site.salt), iterations: site.iterations }, base, 256);
+  const kek = await importKey(new Uint8Array(bits));
+  for (const w of site.keys) {
+    const b = b64(w);
+    try { return new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv: b.slice(0, 12) }, kek, b.slice(12))); }
+    catch {}
+  }
+  throw new Error("wrong password");
 }
 const importKey = raw => crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["decrypt"]);
 
