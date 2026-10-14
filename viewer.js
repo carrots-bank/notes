@@ -1,12 +1,14 @@
 // Read-only viewer for the encrypted library (see lecturenotes/site.py for the format).
-// Every file is nonce(12) || AES-256-GCM ciphertext under one content key. site.json holds that key wrapped
-// once per person, each under PBKDF2-SHA256(password, salt); we try each wrapped copy with the given password.
+// Every file is nonce(12) || AES-256-GCM ciphertext. site.json holds one key bundle per person, each wrapped under
+// PBKDF2-SHA256(password, salt): {"k": shared key, "x": [[index id, key], …]} where "x" lists the restricted
+// courses that person may open (each with its own encrypted index). We try each bundle with the given password.
 const $ = (s, el = document) => el.querySelector(s);
 const main = $("#main"), sidebar = $("#sidebar");
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const enc = p => p.split("/").map(encodeURIComponent).join("/");
 const KEY_STORE = "notes_key";
-let KEY = null, MANIFEST = null;
+let MANIFEST = null;
+const FILE_KEY = {};  // path -> CryptoKey
 const blobUrls = new Map();
 
 const store = {
@@ -30,34 +32,41 @@ async function deriveKey(password, site) {
 }
 const importKey = raw => crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["decrypt"]);
 
-async function decrypt(buf) {
-  const b = new Uint8Array(buf);
-  return crypto.subtle.decrypt({ name: "AES-GCM", iv: b.slice(0, 12) }, KEY, b.slice(12));
-}
-async function fetchBlob(id) {
+async function fetchBlob(id, key) {
   const r = await fetch(`d/${id}.bin`, { cache: "no-cache" });
   if (!r.ok) throw new Error("Missing file");
-  return decrypt(await r.arrayBuffer());
+  const b = new Uint8Array(await r.arrayBuffer());
+  return crypto.subtle.decrypt({ name: "AES-GCM", iv: b.slice(0, 12) }, key, b.slice(12));
 }
+const fetchFile = path => fetchBlob(MANIFEST.files[path], FILE_KEY[path]);
 async function readText(path) {
-  const id = MANIFEST.files[path];
-  if (!id) throw new Error("Not found: " + path);
-  return new TextDecoder().decode(await fetchBlob(id));
+  if (!MANIFEST.files[path]) throw new Error("Not found: " + path);
+  return new TextDecoder().decode(await fetchFile(path));
 }
 const TYPES = { jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", webp: "image/webp", gif: "image/gif",
                 svg: "image/svg+xml", pdf: "application/pdf" };
 async function fileUrl(path) {
   if (blobUrls.has(path)) return blobUrls.get(path);
   const type = TYPES[path.split(".").pop().toLowerCase()] || "application/octet-stream";
-  const url = URL.createObjectURL(new Blob([await fetchBlob(MANIFEST.files[path])], { type }));
+  const url = URL.createObjectURL(new Blob([await fetchFile(path)], { type }));
   blobUrls.set(path, url);
   return url;
 }
 
 // ---------- unlock ----------
+const hex = h => Uint8Array.from(h.match(/../g), x => parseInt(x, 16));
 async function unlockWith(raw) {
-  KEY = await importKey(raw);
-  MANIFEST = JSON.parse(new TextDecoder().decode(await fetchBlob("manifest")));
+  // raw is a JSON key bundle (or, from older sites, a bare 32-byte shared key)
+  const bundle = raw.length === 32 ? { k: null, x: [] } : JSON.parse(new TextDecoder().decode(raw));
+  const parts = [["manifest", await importKey(bundle.k ? hex(bundle.k) : raw)]];
+  for (const [id, k] of bundle.x) parts.push([id, await importKey(hex(k))]);
+  const merged = { files: {}, tree: [] };
+  for (const [id, key] of parts) {
+    const m = JSON.parse(new TextDecoder().decode(await fetchBlob(id, key)));
+    for (const [p, fid] of Object.entries(m.files)) { merged.files[p] = fid; FILE_KEY[p] = key; }
+    merged.tree.push(...m.tree);
+  }
+  MANIFEST = merged;
 }
 async function start() {
   const saved = store.get(KEY_STORE);
@@ -74,7 +83,7 @@ async function start() {
       await unlockWith(raw);
       if (f.remember.checked) store.set(KEY_STORE, btoa(String.fromCharCode(...raw)));
       open();
-    } catch { msg.textContent = "That password didn't work."; KEY = null; }
+    } catch { msg.textContent = "That password didn't work."; }
   });
 }
 function open() {
