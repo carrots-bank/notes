@@ -215,15 +215,19 @@ Rules:
     log.scrollTop = log.scrollHeight;
   }
   function fallbackBox() {
+    const desk = matchMedia("(pointer: fine)").matches;
     return `<div class="donkey-fallback">
-      <p><strong>No donkey helper on this device.</strong> You can still ask your own Claude or ChatGPT: type your question below, then press a button. I copy the question with this lecture's slides, transcript and your notes, and open the chat for you: just paste (⌘V) and send.</p>
-      <div class="donkey-row"><a class="btn" data-d="ext" href="https://claude.ai/new" target="_blank" rel="noopener">Ask in Claude</a>
-        <a class="btn" data-d="ext" href="https://chatgpt.com/" target="_blank" rel="noopener">Ask in ChatGPT</a>
-        <button class="btn ghost" data-d="setup">Set up on this laptop</button></div>
-      ${matchMedia("(pointer: fine)").matches ? `<p class="muted">Helper already installed on this Mac, but the browser can't reach it (Safari blocks that)? <button class="btn ghost" data-d="connect-me">Connect this browser to it</button></p>` : ""}
-      <details class="donkey-paste"><summary>Paste the answer here to save it</summary>
-        <textarea rows="4" placeholder="Paste the answer from Claude or ChatGPT"></textarea>
-        <button class="btn" data-d="pasted">Use this answer</button></details>
+      <p><strong>This device isn't connected to an AI yet.</strong> To get answers right here, connect it to the donkey helper on your Mac:</p>
+      <div class="donkey-row">${desk ? `<button class="btn primary" data-d="connect-me">Connect this browser to my Mac</button>` : ""}
+        <button class="btn ghost" data-d="setup">Set up the helper on a laptop</button></div>
+      ${desk ? "" : `<p class="muted">On a phone or iPad: on your Mac, press 🫏 → <em>Use from phone or iPad</em> and scan the code (or open your personal pairing link here).</p>`}
+      <details class="donkey-ext"><summary>Or ask in Claude / ChatGPT yourself (copy and paste)</summary>
+        <p class="muted">Type your question below, then press a button: I copy it with this lecture's slides, transcript and your notes, and open the chat; just paste (⌘V) and send.</p>
+        <div class="donkey-row"><a class="btn" data-d="ext" href="https://claude.ai/new" target="_blank" rel="noopener">Ask in Claude</a>
+          <a class="btn" data-d="ext" href="https://chatgpt.com/" target="_blank" rel="noopener">Ask in ChatGPT</a></div>
+        <details class="donkey-paste"><summary>Paste the answer here to save it</summary>
+          <textarea rows="4" placeholder="Paste the answer from Claude or ChatGPT"></textarea>
+          <button class="btn" data-d="pasted">Use this answer</button></details></details>
     </div>`;
   }
   function setupBox() {
@@ -447,7 +451,8 @@ Rules:
     const ta = $(".donkey-form textarea"), q = ta.value.trim();
     if (!q || abort) return;
     if (mode() === "fallback") {  // no AI on this device: point at the two links (they must be clicked to open a tab)
-      panel.querySelectorAll("[data-d=ext]").forEach(a => { a.classList.add("pulse"); setTimeout(() => a.classList.remove("pulse"), 1600); });
+      panel.querySelector(".donkey-ext")?.setAttribute("open", "");
+      panel.querySelectorAll("[data-d=ext], [data-d=connect-me]").forEach(a => { a.classList.add("pulse"); setTimeout(() => a.classList.remove("pulse"), 1600); });
       return;
     }
     justPaired = false;

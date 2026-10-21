@@ -139,3 +139,4 @@ body.donkey-open .donkey-fab { display: none; }
 a.btn { text-decoration: none; }
 .donkey .pulse { animation: donkey-pulse .5s ease 3; }
 @keyframes donkey-pulse { 50% { box-shadow: 0 0 0 4px var(--accent); } }
+.donkey-ext { margin-top: 10px; } .donkey-ext > summary { cursor: pointer; color: var(--muted); font-size: 13px; }
