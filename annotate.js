@@ -310,6 +310,7 @@
   function showBar(rect, forMark) {
     bar.innerHTML = COLORS.map(c => `<button class="swatch hl-${c}" data-act="color" data-color="${c}" title="Highlight ${c}"></button>`).join("") +
       `<button data-act="comment" title="Comment">💬</button>` +
+      (window.Donkey ? `<button data-act="ask" title="Ask the donkey about this">🫏</button>` : "") +
       (forMark ? `<button data-act="remove" title="Remove highlight">🗑</button>` : `<button data-act="note" title="Add my note below">📝</button>`);
     bar.hidden = false;
     const bw = bar.offsetWidth, bh = bar.offsetHeight;
@@ -362,6 +363,15 @@
     const b = e.target.closest("button");
     if (!b || !doc || !pending) return;
     const act = b.dataset.act;
+    if (act === "ask") {
+      const quote = pending.id ? doc.items[pending.id].quote : pending.quote;
+      const mk = pending.id && doc.article.querySelector(`mark[data-id="${pending.id}"]`);
+      const r = !pending.id && getSelection().rangeCount && getSelection().getRangeAt(0);
+      const node = mk || (r && r.startContainer);
+      const el = node && (node.nodeType === 3 ? node.parentElement : node).closest("section.sec");
+      getSelection().removeAllRanges(); hideBar(); pending = null;
+      return window.Donkey.open({ quote, key: el?.dataset.key });
+    }
     if (pending.id) {
       const it = doc.items[pending.id];
       if (act === "color") doc.items[it.id] = { ...it, color: b.dataset.color, updated: now() };
@@ -668,5 +678,67 @@
     }
   });
 
-  window.Annotate = { init, attach };
+  // ---------- API for the 🫏 assistant (donkey.js) ----------
+  function quoteOfElement(el) {
+    const idx = textIndex(doc.article);
+    const inside = idx.nodes.filter(e => el.contains(e.node) && e.node.data.trim());
+    if (!inside.length) return null;
+    const s = inside[0].start, last = inside.at(-1), e = last.start + last.node.data.length;
+    return quoteAt(idx.text, s, e);
+  }
+  const heading = key => secEl(key)?.querySelector(":scope > h1, :scope > h2, :scope > h3, :scope > h4");
+  const donkeyApi = {
+    ready: () => !!doc,
+    path: () => doc?.path,
+    title: () => doc?.article.querySelector("h1")?.childNodes[0]?.textContent?.trim() || doc?.path,
+    notes: () => effective().map(x => x.md).join(""),
+    sections: () => effective().map(x => ({ key: x.key, heading: x.heading })),
+    load: name => doc?.ctx.load ? doc.ctx.load(name) : Promise.resolve(null),
+    sectionInView() {  // the section whose heading is the last one above the top third of the screen
+      let best = null;
+      for (const el of doc.article.querySelectorAll(":scope > section.sec")) {
+        if (el.getBoundingClientRect().top < innerHeight / 3) best = el.dataset.key; else break;
+      }
+      return best && best !== "_top" ? best : doc.ctx.secs.find(x => x.key !== "_top")?.key;
+    },
+    sectionHeading: key => doc.ctx.secs.find(x => x.key === key)?.heading || "",
+    // Keep an answer as a side comment on the selected passage (or on the section heading).
+    addComment(quote, key, text) {
+      quote = quote || (heading(key) && quoteOfElement(heading(key)));
+      if (!quote) return false;
+      const id = newId();
+      doc.items[id] = { id, kind: "hl", color: "blue", quote, comment: text, created: now(), updated: now() };
+      changed();
+      setTimeout(() => openDrawer(id), 50);
+      return true;
+    },
+    // Keep an answer as one of the yellow "My note" boxes, under the passage (or under the section heading).
+    addNote(quote, key, text) {
+      quote = quote || (heading(key) && quoteOfElement(heading(key)));
+      if (!quote) return false;
+      const id = newId();
+      doc.items[id] = { id, kind: "note", quote, text, created: now(), updated: now() };
+      changed();
+      return true;
+    },
+    // Weave an answer into the person's own version of the section, after the paragraph it is about.
+    insertIntoSection(key, anchorText, text) {
+      const x = effective().find(o => o.key === key), orig = doc.ctx.secs.find(o => o.key === key);
+      if (!x) return false;
+      const norm = t => t.replace(/[*_`#>\[\]()!\\|]/g, "").replace(/\s+/g, " ").trim().toLowerCase();
+      const paras = x.md.replace(/\s+$/, "").split(/\n{2,}/);
+      const probe = anchorText ? norm(anchorText).slice(0, 40) : "";
+      let at = probe ? paras.findIndex(p => norm(p).includes(probe)) : -1;
+      if (at < 0) at = paras.length - 1;
+      paras.splice(at + 1, 0, `*🫏 Added by AI:*\n\n${text.trim()}`);
+      const id = "edit:" + key, prev = doc.items[id];
+      doc.items[id] = { id, kind: "edit", key, heading: orig.heading, md: paras.join("\n\n") + "\n\n", base: fnv(orig.md),
+                        created: prev?.created || now(), updated: now() };
+      changed();
+      setTimeout(() => secEl(key)?.scrollIntoView({ block: "start", behavior: "smooth" }), 100);
+      return true;
+    },
+  };
+
+  window.Annotate = { init, attach, api: donkeyApi };
 })();

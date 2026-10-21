@@ -123,7 +123,9 @@ async function showDoc(path) {
   const secs = splitSections(md);
   renderNotes(article, secs, path);
   main.scrollTo(0, 0); window.scrollTo(0, 0);
-  window.Annotate?.attach(path, article, { secs, render: (el, parts, opts) => renderNotes(el, parts, path, opts) });
+  const dir = path.split("/").slice(0, -1).join("/");
+  window.Annotate?.attach(path, article, { secs, render: (el, parts, opts) => renderNotes(el, parts, path, opts),
+    load: name => readText(dir + "/" + name).catch(() => null) });
 }
 
 // Markdown is rendered section by section (a section runs from one heading of level 1-4 to the next), each in a
