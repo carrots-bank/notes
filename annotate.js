@@ -5,8 +5,10 @@
 // turns it into an access token ("token": the worker stores records under SHA-256(token)), an AES-GCM key ("enc")
 // and an HMAC key ("doc") that names each document, so the worker sees neither paths nor content.
 //
-// Records: one per document, {v: 1, items: {id: item}}. An item is a highlight {kind: "hl", color, quote, comment}
-// or an own note {kind: "note", quote, text}; deleted items stay as tombstones so devices can merge by `updated`.
+// Records: one per document, {v: 1, items: {id: item}}. An item is a highlight {kind: "hl", color, quote, comment},
+// an own note {kind: "note", quote, text} or an edited section {kind: "edit", key, heading, md, base} (base = hash of
+// the original section when it was edited, to spot later changes to the original); deleted items stay as tombstones
+// so devices can merge by `updated`.
 // A quote is {exact, prefix, suffix, start} over the article's text, so annotations survive small edits to notes.
 (() => {
   const COLORS = ["yellow", "green", "pink", "blue"];
@@ -184,9 +186,10 @@
   }
   function render() {
     if (!doc) return;
-    if (doc.shell.querySelector("textarea")) return;  // don't yank an open editor away; render again when it closes
+    if (doc.shell.querySelector("textarea, .sec-editing")) return;  // don't yank an open editor away
+    paintSections();
     clear();
-    const a = doc.article, live = Object.values(doc.items).filter(it => !it.deleted);
+    const a = doc.article, live = Object.values(doc.items).filter(it => !it.deleted && it.kind !== "edit");
     const text = textIndex(a).text, placed = [], orphans = [];
     for (const it of live) {
       const at = locate(text, it.quote);
@@ -210,7 +213,9 @@
         if (block.tagName === "LI") block.append(box); else block.after(box);
       }
     }
-    renderCards(live.filter(it => it.kind === "hl" && it.comment), orphans.map(o => o.it));
+    const keys = new Set(doc.ctx.secs.map(x => x.key));
+    const lostEdits = Object.values(doc.items).filter(it => it.kind === "edit" && !it.deleted && !keys.has(it.key));
+    renderCards(live.filter(it => it.kind === "hl" && it.comment), [...orphans.map(o => o.it), ...lostEdits]);
     layout();
   }
 
@@ -249,13 +254,14 @@
     const c = document.createElement("div");
     c.className = "annot-card" + (orphan ? " orphan" : "");
     c.dataset.id = it.id;
-    const quote = `<div class="annot-quote hl-${it.color || "yellow"}">${escH(it.quote.exact.slice(0, 140))}${it.quote.exact.length > 140 ? "…" : ""}</div>`;
+    const q = it.kind === "edit" ? `Your edited section: ${it.heading}` : it.quote.exact;
+    const quote = `<div class="annot-quote hl-${it.color || "yellow"}">${escH(q.slice(0, 140))}${q.length > 140 ? "…" : ""}</div>`;
     if (editing) {
       c.innerHTML = `${quote}<textarea rows="3" placeholder="Add a comment…">${escH(it.comment || "")}</textarea>
         <div class="annot-actions"><button class="btn primary" data-act="c-save">Save</button><button class="btn ghost" data-act="c-cancel">Cancel</button></div>`;
       setTimeout(() => c.querySelector("textarea").focus(), 0);
     } else {
-      const body = it.kind === "note" ? md(it.text) : md(it.comment);
+      const body = it.kind === "note" ? md(it.text) : it.kind === "edit" ? md(it.md) : md(it.comment);
       c.innerHTML = `${quote}<div class="annot-body">${body}</div><div class="annot-meta">${when(it.updated)}</div>
         <div class="annot-actions">${orphan ? "" : `<button class="btn ghost" data-act="c-edit">Edit</button>`}
         <button class="btn ghost" data-act="${orphan ? "item-del" : "c-del"}">Delete</button></div>`;
@@ -311,6 +317,7 @@
     let top = coarse ? rect.bottom + 10 : rect.top - bh - 8;
     if (top < 60) top = rect.bottom + 8;
     if (top + bh > innerHeight - 8) top = Math.max(60, rect.top - bh - 8);
+    top = Math.min(Math.max(top, 60), innerHeight - bh - 8);
     const left = Math.min(innerWidth - bw - 8, Math.max(8, rect.left + rect.width / 2 - bw / 2));
     bar.style.top = top + "px";
     bar.style.left = left + "px";
@@ -323,7 +330,7 @@
     const r = sel.getRangeAt(0);
     if (!doc.article.contains(r.commonAncestorContainer)) return null;
     const anc = r.commonAncestorContainer.nodeType === 3 ? r.commonAncestorContainer.parentElement : r.commonAncestorContainer;
-    if (anc.closest(".annot-ui")) return null;
+    if (anc.closest(".annot-ui, .sec-editing")) return null;
     const idx = textIndex(doc.article);
     let s = offsetOf(idx, r.startContainer, r.startOffset), e = offsetOf(idx, r.endContainer, r.endOffset);
     if (s < 0 || e < 0) return null;
@@ -471,7 +478,7 @@
   addEventListener("resize", () => layout());
 
   // ---------- attach to a rendered document ----------
-  async function attach(path, article) {
+  async function attach(path, article, ctx) {
     if (doc) { if (doc.dirty) save(); doc.observer?.disconnect(); }
     doc = null;
     hideBar(); pending = null;
@@ -495,7 +502,8 @@
     let st = document.getElementById("annot-status");
     if (!st) { st = document.createElement("div"); st.id = "annot-status"; st.hidden = true; document.body.append(st); }
     shell.append(article, margin, fab);
-    const d = { path, id: await docId(path), items: {}, updated: 0, article, shell, margin, fab, dirty: false, enabled: true };
+    const d = { path, id: await docId(path), items: {}, updated: 0, article, shell, margin, fab, dirty: false, enabled: true,
+                ctx, paintedSig: ctx.secs.map(() => "").join("|") };
     if (!article.isConnected) return;
     doc = d;
     d.observer = new ResizeObserver(() => layout());
@@ -505,6 +513,160 @@
   }
   window.addEventListener("beforeunload", () => { if (doc?.dirty) save(); });
   document.addEventListener("visibilitychange", () => { if (document.hidden && doc?.dirty) save(); });
+
+  // ---------- editing sections ----------
+  const fnv = str => { let h = 0x811c9dc5; for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 0x01000193); } return (h >>> 0).toString(16); };
+  const secEl = key => doc.article.querySelector(`section.sec[data-key="${CSS.escape(key)}"]`);
+  function edits() {
+    const m = {};
+    for (const it of Object.values(doc.items)) if (it.kind === "edit" && !it.deleted) m[it.key] = it;
+    return m;
+  }
+  const effective = () => { const e = edits(); return doc.ctx.secs.map(x => e[x.key] ? { ...x, md: e[x.key].md, edit: e[x.key] } : x); };
+
+  function paintSections() {
+    const eff = effective();
+    const sig = eff.map(x => x.edit ? x.edit.id + ":" + x.edit.updated : "").join("|");
+    if (sig !== doc.paintedSig) { doc.ctx.render(doc.article, eff); doc.paintedSig = sig; }
+    for (const x of eff) {
+      const el = secEl(x.key);
+      if (!el || x.key === "_top") continue;
+      el.querySelectorAll(".sec-tools").forEach(t => t.remove());
+      el.classList.toggle("sec-edited", !!x.edit);
+      const tools = document.createElement("div");
+      tools.className = "sec-tools annot-ui";
+      const stale = x.edit && x.edit.base !== fnv(doc.ctx.secs.find(o => o.key === x.key).md);
+      tools.innerHTML = (x.edit ? `<span class="sec-badge">edited</span>` : "") +
+        (stale ? `<button class="sec-badge warn" data-act="sec-compare" title="The original notes changed after you edited this section">original updated</button>` : "") +
+        `<button class="sec-edit" data-act="sec-edit" title="Edit this section">✏️</button>`;
+      (el.querySelector(":scope > h1, :scope > h2, :scope > h3, :scope > h4") || el).append(tools);
+    }
+  }
+
+  let td = null;
+  function toMarkdown(el) {
+    if (!td) {
+      td = new TurndownService({ headingStyle: "atx", bulletListMarker: "-", codeBlockStyle: "fenced", emDelimiter: "*" });
+      if (window.turndownPluginGfm) td.use(turndownPluginGfm.gfm);
+      td.addRule("img", { filter: "img", replacement: (c, n) => `![${n.getAttribute("alt") || ""}](${n.dataset.src || n.getAttribute("src") || ""})` });
+      td.addRule("a", { filter: n => n.nodeName === "A" && (n.dataset.href || n.getAttribute("href")),
+                        replacement: (c, n) => `[${c}](${n.dataset.href || n.getAttribute("href")})` });
+      td.remove(["button", "script", "style"]);
+    }
+    return td.turndown(el.innerHTML).trim() + "\n\n";
+  }
+
+  const TOOLS = [["bold", "<b>B</b>", "Bold"], ["italic", "<i>I</i>", "Italic"], ["h3", "H", "Heading"], ["p", "¶", "Normal text"],
+                 ["ul", "•", "Bullet list"], ["ol", "1.", "Numbered list"], ["quote", "❝", "Quote"], ["link", "🔗", "Link"],
+                 ["clear", "⌫", "Clear formatting"]];
+  function openEditor(key) {
+    if (doc.shell.querySelector(".sec-editing")) return;
+    hideBar(); pending = null;
+    clear();
+    const x = effective().find(o => o.key === key), el = secEl(key);
+    el.classList.add("sec-editing");
+    el.innerHTML = `<div class="sec-toolbar annot-ui">${TOOLS.map(([c, l, t]) => `<button data-cmd="${c}" title="${t}">${l}</button>`).join("")}
+        <span class="spacer"></span><button data-cmd="mode" class="sec-mode" title="Switch between visual and Markdown">Markdown</button></div>
+      <div class="sec-visual" contenteditable="true" spellcheck="true"></div>
+      <textarea class="sec-md" hidden spellcheck="true"></textarea>
+      <div class="sec-actions annot-ui"><button class="btn primary" data-act="sec-save">Save</button>
+        <button class="btn ghost" data-act="sec-cancel">Cancel</button>
+        ${x.edit ? `<span class="spacer"></span><button class="btn ghost" data-act="sec-restore">Restore original</button>` : ""}</div>`;
+    const vis = el.querySelector(".sec-visual"), ta = el.querySelector(".sec-md");
+    doc.ctx.render(vis, [{ key, md: x.md }], { forEdit: true });
+    el._edit = { key, mode: "visual", touched: false, md: x.md };
+    vis.addEventListener("input", () => (el._edit.touched = true));
+    ta.addEventListener("input", () => (el._edit.touched = true));
+    vis.addEventListener("paste", e => {  // paste as plain text, so nothing heavy or foreign lands in the notes
+      e.preventDefault();
+      document.execCommand("insertText", false, e.clipboardData.getData("text/plain"));
+    });
+    const tb = el.querySelector(".sec-toolbar");
+    let saved = null;  // the selection inside the editor, kept while a toolbar button is pressed
+    const keep = () => { const sl = getSelection(); if (sl.rangeCount && vis.contains(sl.getRangeAt(0).commonAncestorContainer)) saved = sl.getRangeAt(0).cloneRange(); };
+    vis.addEventListener("keyup", keep); vis.addEventListener("mouseup", keep);
+    document.addEventListener("selectionchange", keep);
+    el._unlisten = () => document.removeEventListener("selectionchange", keep);
+    tb.addEventListener("mousedown", e => { e.preventDefault(); keep(); });
+    tb.addEventListener("click", e => {
+      const c = e.target.closest("[data-cmd]")?.dataset.cmd;
+      if (!c) return;
+      if (c === "mode") return switchMode(el);
+      if (el._edit.mode !== "visual") return;
+      vis.focus();
+      if (saved) { const sl = getSelection(); sl.removeAllRanges(); sl.addRange(saved); }
+      const run = (cmd, arg) => document.execCommand(cmd, false, arg);
+      ({ bold: () => run("bold"), italic: () => run("italic"), h3: () => run("formatBlock", "h3"), p: () => run("formatBlock", "p"),
+         ul: () => run("insertUnorderedList"), ol: () => run("insertOrderedList"), quote: () => run("formatBlock", "blockquote"),
+         clear: () => run("removeFormat"),
+         link: () => { const u = prompt("Link address (https://…)"); if (u) run("createLink", u); } })[c]?.();
+      el._edit.touched = true;
+    });
+    el.scrollIntoView({ block: "nearest" });
+    vis.focus();
+  }
+  function switchMode(el) {
+    const ed = el._edit, vis = el.querySelector(".sec-visual"), ta = el.querySelector(".sec-md");
+    if (ed.mode === "visual") {
+      ta.value = ed.touched ? toMarkdown(vis.firstElementChild || vis) : ed.md;
+      ed.mode = "md"; vis.hidden = true; ta.hidden = false;
+      ta.style.height = Math.max(200, ta.scrollHeight + 20) + "px";
+      ta.focus();
+    } else {
+      ed.md = ta.value;
+      doc.ctx.render(vis, [{ key: ed.key, md: ed.md }], { forEdit: true });
+      ed.mode = "visual"; ta.hidden = true; vis.hidden = false; vis.focus();
+    }
+    el.querySelector(".sec-mode").textContent = ed.mode === "visual" ? "Markdown" : "Visual";
+    el.querySelectorAll(".sec-toolbar [data-cmd]:not([data-cmd=mode])").forEach(b => (b.disabled = ed.mode !== "visual"));
+  }
+  function endEdit(el) { el._unlisten?.(); el.classList.remove("sec-editing"); delete el._edit; el.innerHTML = ""; doc.paintedSig = null; }
+  function closeEditor(el) { endEdit(el); render(); }
+  function saveEditor(el) {
+    const ed = el._edit, orig = doc.ctx.secs.find(o => o.key === ed.key);
+    if (!ed.touched) return closeEditor(el);
+    let out = ed.mode === "md" ? el.querySelector(".sec-md").value : toMarkdown(el.querySelector(".sec-visual").firstElementChild || el.querySelector(".sec-visual"));
+    out = out.replace(/\s+$/, "") + "\n\n";
+    const id = "edit:" + ed.key, prev = doc.items[id];
+    if (out.trim() === orig.md.trim()) doc.items[id] = { id, deleted: true, updated: now() };
+    else doc.items[id] = { id, kind: "edit", key: ed.key, heading: orig.heading, md: out, base: fnv(orig.md),
+                           created: prev?.created || now(), updated: now() };
+    endEdit(el);
+    changed();
+  }
+  function compare(key) {
+    const el = secEl(key), orig = doc.ctx.secs.find(o => o.key === key);
+    if (!el || el.querySelector(".sec-compare")) return;
+    const box = document.createElement("div");
+    box.className = "sec-compare annot-ui";
+    box.innerHTML = `<div class="annot-label">The original version of this section has changed since you edited it. Here it is now:</div>
+      <div class="sec-compare-body"></div>
+      <div class="annot-actions"><button class="btn primary" data-act="sec-keep">Keep my version</button>
+        <button class="btn ghost" data-act="sec-take">Use the new original</button>
+        <button class="btn ghost" data-act="sec-compare-close">Close</button></div>`;
+    doc.ctx.render(box.querySelector(".sec-compare-body"), [orig]);
+    (el.querySelector(":scope > h1, :scope > h2, :scope > h3, :scope > h4") || el.firstElementChild).after(box);
+  }
+
+  document.addEventListener("click", e => {
+    if (!doc) return;
+    const b = e.target.closest("[data-act^=sec-]");
+    if (!b || !doc.article.contains(b)) return;
+    const el = b.closest("section.sec"), key = el?.dataset.key, id = "edit:" + key;
+    e.preventDefault();
+    switch (b.dataset.act) {
+      case "sec-edit": return openEditor(key);
+      case "sec-save": return saveEditor(el);
+      case "sec-cancel": return closeEditor(el);
+      case "sec-restore":
+        if (!confirm("Restore the original text of this section? Your version will be removed.")) return;
+        doc.items[id] = { id, deleted: true, updated: now() }; endEdit(el); return changed();
+      case "sec-compare": return compare(key);
+      case "sec-compare-close": return b.closest(".sec-compare").remove();
+      case "sec-keep": doc.items[id] = { ...doc.items[id], base: fnv(doc.ctx.secs.find(o => o.key === key).md), updated: now() }; return changed();
+      case "sec-take": doc.items[id] = { id, deleted: true, updated: now() }; return changed();
+    }
+  });
 
   window.Annotate = { init, attach };
 })();

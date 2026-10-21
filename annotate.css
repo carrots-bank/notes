@@ -62,3 +62,34 @@ li > .my-note { margin-top: 8px; }
 .annot-status.offline { background: var(--warn); color: #fff; }
 .annot-hint { font: 14px/1.4 var(--sans); background: var(--accent-soft); padding: 8px 12px; border-radius: 8px; }
 @media print { .annot-bar, .annot-fab, .annot-status, .annot-margin { display: none !important; } }
+
+/* Editing sections */
+.notes section.sec { position: relative; }
+.sec-tools { display: inline-flex; gap: 6px; align-items: center; margin-left: 10px; vertical-align: middle;
+  font: 12px/1 var(--sans); }
+.sec-edit { border: 1px solid var(--border); background: var(--surface); border-radius: 8px; padding: 4px 7px; cursor: pointer;
+  font-size: 14px; opacity: 0; transition: opacity .15s; }
+.notes section.sec:hover .sec-tools .sec-edit, .sec-edit:focus { opacity: 1; }
+@media (hover: none) { .sec-edit { opacity: .55; } }
+.sec-badge { background: var(--accent-soft); color: var(--accent); border-radius: 999px; padding: 3px 8px; font-weight: 600;
+  border: 0; font: 600 12px/1 var(--sans); }
+.sec-badge.warn { background: #fdecc8; color: var(--warn); cursor: pointer; }
+.notes section.sec-edited { box-shadow: inset 3px 0 0 var(--accent-soft); }
+.notes section.sec-editing { background: var(--surface); border: 1px solid var(--accent); border-radius: 12px; padding: 0 16px 12px;
+  margin: 16px -16px; }
+.sec-toolbar { position: sticky; top: 53px; z-index: 5; display: flex; flex-wrap: wrap; gap: 2px; padding: 8px 0;
+  background: var(--surface); border-bottom: 1px solid var(--border); margin-bottom: 8px; }
+.sec-toolbar button { border: 0; background: none; color: var(--text); font: 15px/1 var(--sans); min-width: 34px; height: 32px;
+  border-radius: 7px; cursor: pointer; }
+.sec-toolbar button:hover:not(:disabled) { background: var(--accent-soft); }
+.sec-toolbar button:disabled { opacity: .35; cursor: default; }
+.sec-toolbar .sec-mode { font-size: 13px; border: 1px solid var(--border); padding: 0 10px; }
+.sec-toolbar .spacer, .sec-actions .spacer { flex: 1; }
+.sec-visual { outline: none; min-height: 80px; }
+.sec-visual > section.sec { position: static; }
+.sec-md { width: 100%; min-height: 200px; font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; padding: 10px;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); resize: vertical; }
+.sec-actions { display: flex; gap: 6px; margin-top: 10px; }
+.sec-compare { margin: 8px 0 16px; padding: 10px 14px; border: 1px dashed var(--warn); border-radius: 10px; background: var(--bg); }
+.sec-compare-body { font-size: 16px; opacity: .9; }
+@media print { .sec-tools { display: none !important; } }

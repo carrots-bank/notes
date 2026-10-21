@@ -118,21 +118,56 @@ async function showDoc(path) {
   let md;
   try { md = await readText(path); }
   catch (e) { main.innerHTML = `<section class="panel"><p>${esc(e.message)}</p></section>`; return; }
+  main.innerHTML = `<article class="notes"></article>`;
+  const article = main.querySelector("article.notes");
+  const secs = splitSections(md);
+  renderNotes(article, secs, path);
+  main.scrollTo(0, 0); window.scrollTo(0, 0);
+  window.Annotate?.attach(path, article, { secs, render: (el, parts, opts) => renderNotes(el, parts, path, opts) });
+}
+
+// Markdown is rendered section by section (a section runs from one heading of level 1-4 to the next), each in a
+// <section class="sec" data-key>, so annotate.js can swap in a person's own version of any section.
+function splitSections(md) {
+  const secs = [], seen = {};
+  let cur = { key: "_top", heading: "", md: "" }, fence = false;
+  for (const line of md.split("\n")) {
+    if (/^\s*(```|~~~)/.test(line)) fence = !fence;
+    const h = !fence && line.match(/^(#{1,4})\s+(.+?)\s*#*\s*$/);
+    if (h) {
+      secs.push(cur);
+      const base = h[1].length + ":" + h[2].trim();
+      seen[base] = (seen[base] || 0) + 1;
+      cur = { key: seen[base] > 1 ? `${base}#${seen[base]}` : base, heading: h[2].trim(), md: "" };
+    }
+    cur.md += line + "\n";
+  }
+  secs.push(cur);
+  return secs.filter(x => x.key !== "_top" || x.md.trim());
+}
+
+// Fill `article` with the rendered sections. opts.forEdit keeps the markup close to the Markdown (for the editor):
+// original link/image targets are kept in data-href/data-src either way, so edited HTML converts back faithfully.
+function renderNotes(article, secs, path, opts = {}) {
   const dir = path.split("/").slice(0, -1).join("/");
-  main.innerHTML = `<article class="notes">${DOMPurify.sanitize(marked.parse(md))}</article>`;
+  article.innerHTML = DOMPurify.sanitize(secs.map(x =>
+    `<section class="sec" data-key="${esc(x.key)}">${marked.parse(x.md)}</section>`).join(""));
   const base = new URL("http://lib/" + enc(dir) + "/");
   const resolve = href => decodeURIComponent(new URL(href, base).pathname.slice(1));
-  main.querySelectorAll("img").forEach(img => {
+  article.querySelectorAll("img").forEach(img => {
     const src = img.getAttribute("src");
     img.removeAttribute("src");
+    if (src) img.dataset.src = src;
     if (!src || /^(https?:|data:)/.test(src)) { if (src) img.src = src; return; }
     const target = resolve(src);
     if (!MANIFEST.files[target]) return;
     fileUrl(target).then(u => { img.src = u; });
-    img.addEventListener("click", () => img.src && window.open(img.src, "_blank"));
+    if (!opts.forEdit) img.addEventListener("click", () => img.src && window.open(img.src, "_blank"));
   });
-  main.querySelectorAll("a[href]").forEach(a => {
+  article.querySelectorAll("a[href]").forEach(a => {
     const href = a.getAttribute("href");
+    a.dataset.href = href;
+    if (opts.forEdit) return;
     if (/^(https?:|mailto:|#)/.test(href)) { if (/^https?:/.test(href)) a.target = "_blank"; return; }
     const target = resolve(href);
     if (target.endsWith(".md")) { a.href = "#/doc/" + enc(target); return; }
@@ -145,10 +180,10 @@ async function showDoc(path) {
       if (w) w.location = u; else location.href = u;
     });
   });
-  main.querySelectorAll("thead").forEach(th => { if (![...th.querySelectorAll("th")].some(c => c.textContent.trim())) th.remove(); });
-  main.querySelectorAll("table").forEach(t => { const w = document.createElement("div"); w.className = "table-wrap"; t.replaceWith(w); w.append(t); });
-  main.scrollTo(0, 0); window.scrollTo(0, 0);
-  window.Annotate?.attach(path, main.querySelector("article.notes"));
+  if (opts.forEdit) return article;
+  article.querySelectorAll("thead").forEach(th => { if (![...th.querySelectorAll("th")].some(c => c.textContent.trim())) th.remove(); });
+  article.querySelectorAll("table").forEach(t => { const w = document.createElement("div"); w.className = "table-wrap"; t.replaceWith(w); w.append(t); });
+  return article;
 }
 
 function route() {
