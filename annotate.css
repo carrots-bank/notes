@@ -134,3 +134,5 @@ body.donkey-open .donkey-fab { display: none; }
 .donkey-setup code { background: var(--code); padding: 1px 5px; border-radius: 4px; font-size: 12.5px; word-break: break-all; }
 .donkey-hint { font-size: 14px; }
 @media print { .donkey, .donkey-fab { display: none !important; } }
+.donkey-qr { display: flex; justify-content: center; margin: 8px 0; }
+.donkey-qr svg { width: 220px; height: 220px; background: #fff; border-radius: 8px; }

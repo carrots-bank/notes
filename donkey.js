@@ -2,6 +2,8 @@
 // the person's own Claude Code or Codex login, so answers come from their own subscription and never through anyone
 // else's account. Every question carries the lecture's slide text, transcript and the person's notes, so answers stay
 // grounded in the lecture. Without a helper, the same package can be copied into claude.ai or chatgpt.com.
+// A phone/iPad paired with a Mac (QR code from the Mac's panel) sends its questions to that Mac through an encrypted
+// mailbox on the notes' Cloudflare worker; only the device and the Mac hold the key (format mirrored in the helper).
 (() => {
   const HELPER = "http://127.0.0.1:47321";
   const SITE = location.origin + location.pathname.replace(/[^/]*$/, "");
@@ -10,6 +12,54 @@
   const A = () => window.Annotate?.api;
   const pref = { get: () => { try { return localStorage.getItem("donkey_engine") || "auto"; } catch { return "auto"; } },
                  set: v => { try { localStorage.setItem("donkey_engine", v); } catch {} } };
+
+  // ---------- relay: pairing and end-to-end encryption (HMAC-SHA256 counter mode + HMAC tag) ----------
+  const te = s => new TextEncoder().encode(s);
+  const toHex = b => [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, "0")).join("");
+  const fromHex = h => Uint8Array.from(h.match(/../g), x => parseInt(x, 16));
+  const rnd = n => crypto.getRandomValues(new Uint8Array(n));
+  function b64(bytes) { let s = ""; for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000)); return btoa(s); }
+  const unb64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+  const hkey = raw => crypto.subtle.importKey("raw", raw, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const sign = async (k, data) => new Uint8Array(await crypto.subtle.sign("HMAC", k, data));
+  async function subkeys(keyHex) { const k = await hkey(fromHex(keyHex)); return [await hkey(await sign(k, te("enc"))), await hkey(await sign(k, te("mac")))]; }
+  async function stream(kenc, nonce, n) {
+    const parts = [];
+    for (let i = 0; i < Math.ceil(n / 32); i++) {
+      const blk = new Uint8Array(20); blk.set(nonce); new DataView(blk.buffer).setUint32(16, i);
+      parts.push(sign(kenc, blk));
+    }
+    const out = new Uint8Array(parts.length * 32);
+    (await Promise.all(parts)).forEach((p, i) => out.set(p, i * 32));
+    return out.subarray(0, n);
+  }
+  async function seal(keyHex, text) {
+    const [kenc, kmac] = await subkeys(keyHex), nonce = rnd(16), pt = te(text), ks = await stream(kenc, nonce, pt.length);
+    const body = new Uint8Array(16 + pt.length); body.set(nonce);
+    for (let i = 0; i < pt.length; i++) body[16 + i] = pt[i] ^ ks[i];
+    const tag = await sign(kmac, body), all = new Uint8Array(body.length + 32);
+    all.set(body); all.set(tag, body.length);
+    return b64(all);
+  }
+  async function unseal(keyHex, data) {
+    const raw = unb64(data), body = raw.subarray(0, raw.length - 32), tag = raw.subarray(raw.length - 32);
+    const [kenc, kmac] = await subkeys(keyHex), want = await sign(kmac, body);
+    if (want.length !== tag.length || want.some((x, i) => x !== tag[i])) throw new Error("bad tag");
+    const nonce = body.subarray(0, 16), ct = body.subarray(16), ks = await stream(kenc, nonce, ct.length);
+    return new TextDecoder().decode(ct.map((x, i) => x ^ ks[i]));
+  }
+  const sha256hex = async s => toHex(await crypto.subtle.digest("SHA-256", te(s)));
+  const paired = { get: () => { try { return JSON.parse(localStorage.getItem("donkey_relay")); } catch { return null; } },
+                   set: v => { try { v ? localStorage.setItem("donkey_relay", JSON.stringify(v)) : localStorage.removeItem("donkey_relay"); } catch {} } };
+  let justPaired = false;
+  if (location.hash.startsWith("#pair=")) {  // opened from the QR code shown on the Mac
+    try {
+      const p = JSON.parse(atob(location.hash.slice(6).replace(/-/g, "+").replace(/_/g, "/")));
+      if (/^[0-9a-f]{64}$/.test(p.t) && /^[0-9a-f]{64}$/.test(p.k)) { paired.set({ t: p.t, k: p.k }); justPaired = true; }
+    } catch {}
+    history.replaceState(null, "", location.pathname);
+  }
+  let relayState = null;  // {seen, now} from the worker
 
   const SYSTEM = `You are the study assistant (a friendly donkey 🫏) inside a university student's lecture-notes app.
 You are given one lecture's materials: the text of every slide, the transcript of the lecture recording (machine
@@ -67,8 +117,32 @@ Rules:
     const p = pref.get(), list = helper?.engines || [];
     return list.includes(p) ? p : list[0] || null;
   }
+  const relayUrl = () => A()?.relayAuth().url;
+  function mode() {
+    if (helper && chosenEngine()) return "local";
+    if (paired.get() && relayUrl()) return "relay";
+    return "fallback";
+  }
+  async function relayCall(method, path, body) {
+    const r = await fetch(relayUrl() + "/v1/relay/" + path, { method, cache: "no-store",
+      headers: { authorization: "Bearer " + paired.get().t, "content-type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
+    const j = await r.json().catch(() => ({}));
+    if (r.status === 401) { paired.set(null); throw new Error("This device isn't paired any more. Pair it again from your Mac."); }
+    if (!r.ok) throw new Error(j.error || "relay " + r.status);
+    return j;
+  }
+  async function checkRelay() {
+    if (mode() !== "relay") return;
+    try { relayState = await relayCall("GET", "status"); } catch { relayState = null; }
+    showEngine();
+  }
+  const macOnline = () => relayState && relayState.now - relayState.seen < 60000;
   function showEngine() {
     const el = $(".donkey-engine"), e = chosenEngine();
+    if (mode() === "relay") {
+      el.innerHTML = !relayState || !relayState.seen ? "· via your Mac" : macOnline() ? "· via your Mac (online)" : "· your Mac seems offline (is it on and awake?)";
+      return;
+    }
     if (!helper) { el.textContent = "· no helper on this device"; return; }
     if (!e) { el.textContent = "· helper found, no AI tool"; return; }
     const names = { claude: "your Claude", codex: "your ChatGPT" };
@@ -112,7 +186,7 @@ Rules:
     document.body.classList.add("donkey-open");
     renderAbout();
     renderLog();
-    checkHelper(true).then(renderLog);
+    checkHelper(true).then(() => { renderLog(); checkRelay(); });
     setTimeout(() => $("textarea").focus(), 50);
   }
   function close() { panel.hidden = true; document.body.classList.remove("donkey-open"); }
@@ -132,8 +206,11 @@ Rules:
             <button class="btn ghost" data-d="note">📝 Add as my note</button>
             <button class="btn ghost" data-d="weave">✍️ Add into the text</button>
             <button class="btn ghost" data-d="copy">Copy</button></div>` : ""}</div>`).join("");
-    if (!helper || !chosenEngine()) html += fallbackBox();
-    if (!list.length && helper && chosenEngine()) html += `<p class="muted donkey-hint">Ask anything about this lecture: “explain this more simply”, “give me an example”, “add a paragraph on …”, “make 3 exam questions on this section”. I read the slides, the transcript and your notes first.</p>`;
+    if (justPaired) html = `<div class="donkey-fallback"><strong>✓ This device is paired with your Mac.</strong> Questions you ask here are answered by your Mac (it needs to be on and awake).</div>` + html;
+    if (mode() === "fallback") html += fallbackBox();
+    if (mode() === "local" && helper && !list.length) html += `<p class="donkey-row"><button class="btn ghost" data-d="pair">📱 Use from phone or iPad</button></p>`;
+    if (mode() === "relay" && !list.length) html += `<p class="muted donkey-hint">Answered by your Mac, through your own Claude. <button class="btn ghost" data-d="unpair-me">Unpair this device</button></p>`;
+    if (!list.length && mode() !== "fallback") html += `<p class="muted donkey-hint">Ask anything about this lecture: “explain this more simply”, “give me an example”, “add a paragraph on …”, “make 3 exam questions on this section”. I read the slides, the transcript and your notes first.</p>`;
     log.innerHTML = html;
     log.scrollTop = log.scrollHeight;
   }
@@ -174,6 +251,7 @@ Rules:
     const engine = chosenEngine();
     $("[data-d=stop]").hidden = false;
     abort = new AbortController();
+    if (mode() === "relay") return askRelay(question, ctx, msg);
     try {
       const r = await fetch(HELPER + "/ask", { method: "POST", signal: abort.signal, headers: { "content-type": "application/json" },
         body: JSON.stringify({ engine, system: SYSTEM, prompt: await buildPrompt(question, ctx) }) });
@@ -204,6 +282,85 @@ Rules:
     $("[data-d=stop]").hidden = true;
     renderLog();
   }
+  async function askRelay(question, ctx, msg) {
+    const sig = abort.signal, key = paired.get().k;
+    try {
+      const data = await seal(key, JSON.stringify({ engine: pref.get() === "auto" ? "" : pref.get(), system: SYSTEM, prompt: await buildPrompt(question, ctx) }));
+      const job = await relayCall("POST", "job", { data });
+      let from = 0, started = Date.now(), picked = false;
+      for (;;) {
+        if (sig.aborted) throw Object.assign(new Error("stopped"), { name: "AbortError" });
+        await new Promise(r => setTimeout(r, 800));
+        const st = await relayCall("GET", `job/${job.id}?from=${from}`);
+        for (const c of st.chunks) {
+          const ev = JSON.parse(await unseal(key, c));
+          if (ev.t) msg.text += ev.t;
+          if (ev.error) throw new Error(ev.error);
+        }
+        from += st.chunks.length;
+        if (st.status !== "new" && !picked) { picked = true; relayState = { seen: Date.now(), now: Date.now() }; showEngine(); }
+        updateLast(msg);
+        if (st.status === "done") break;
+        if (st.status === "error") throw new Error("Your Mac couldn't answer. Try pairing this device again.");
+        if (!picked && Date.now() - started > 45000) throw new Error("Your Mac didn't pick up the question. Is it switched on, awake and online?");
+      }
+      if (!msg.text) throw new Error("The AI returned an empty answer.");
+    } catch (e) {
+      if (e.name === "AbortError") msg.text += msg.text ? "\n\n*(stopped)*" : "*(stopped)*";
+      else msg.error = "Couldn't get an answer: " + e.message;
+    }
+    msg.done = true;
+    abort = null;
+    $("[data-d=stop]").hidden = true;
+    renderLog();
+  }
+
+  // On the Mac: create (once) this helper's mailbox, then pair one phone/iPad with a QR code.
+  async function pairDevice() {
+    const log = $(".donkey-log");
+    log.innerHTML = `<p class="muted">Preparing a pairing code…</p>`;
+    try {
+      const { url, token } = A().relayAuth();
+      if (!url || !token) throw new Error("Sync isn't switched on for this account.");
+      const local = (path, body) => fetch(HELPER + path, { method: body ? "POST" : "GET", headers: { "content-type": "application/json" },
+        body: body ? JSON.stringify(body) : undefined }).then(r => r.ok ? r.json() : Promise.reject(new Error("helper " + r.status)));
+      const remote = (path, body) => fetch(url + "/v1/relay/" + path, { method: "POST", headers: { authorization: "Bearer " + token,
+        "content-type": "application/json" }, body: JSON.stringify(body) }).then(r => r.ok ? r.json() : Promise.reject(new Error("relay " + r.status)));
+      let cfg = await local("/relay/config");
+      if (!cfg.configured || cfg.worker !== url) {
+        const box = await remote("mailbox", {});
+        await local("/relay/setup", { worker: url, mailbox: box.mailbox, mac: box.mac });
+        cfg = { mailbox: box.mailbox };
+      }
+      const secret = toHex(rnd(32)), key = toHex(rnd(32)), device = await sha256hex(secret);
+      await remote("device", { mailbox: cfg.mailbox, device, label: "phone/iPad" });
+      await local("/relay/pair", { device, key });
+      const link = SITE + "#pair=" + btoa(JSON.stringify({ t: secret, k: key })).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+      let qr = "";
+      if (window.qrcode) { const q = qrcode(0, "M"); q.addData(link); q.make(); qr = q.createSvgTag({ cellSize: 4, margin: 2, scalable: true }); }
+      log.innerHTML = `<div class="donkey-setup">
+        <h4>📱 Pair a phone or iPad with this Mac</h4>
+        <ol><li>On the phone or iPad, scan this code with the camera (or send yourself the link and open it).</li>
+            <li>Open it in the browser you use for the notes, and sign in there if asked.</li>
+            <li>That's it: 🫏 on that device now asks this Mac, using your Claude. Keep the Mac on and awake.</li></ol>
+        <div class="donkey-qr">${qr}</div>
+        <p><button class="btn" data-d="copylink">Copy link</button> <span class="muted">This code pairs one device; make a new one for each.</span></p>
+        <p class="muted">Pair only your own devices: whoever uses a paired device asks with your Claude account.</p>
+        <p><button class="btn ghost" data-d="unpair-all">Unpair all devices</button> <button class="btn" data-d="back">Done</button></p></div>`;
+      log.querySelector("[data-d=copylink]").dataset.link = link;
+    } catch (e) {
+      log.innerHTML = `<div class="donkey-msg ai error">Couldn't prepare pairing: ${escH(e.message)}</div><button class="btn" data-d="back">Back</button>`;
+    }
+  }
+  async function unpairAll() {
+    const { url, token } = A().relayAuth();
+    const cfg = await fetch(HELPER + "/relay/config").then(r => r.json()).catch(() => ({}));
+    if (cfg.mailbox) await fetch(url + "/v1/relay/unpair", { method: "POST", headers: { authorization: "Bearer " + token,
+      "content-type": "application/json" }, body: JSON.stringify({ mailbox: cfg.mailbox }) }).catch(() => {});
+    await fetch(HELPER + "/relay/unpair-all", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }).catch(() => {});
+    $(".donkey-log").innerHTML = `<div class="donkey-fallback">All phones and iPads are unpaired from this Mac.</div><button class="btn" data-d="back">Back</button>`;
+  }
+
   function updateLast(msg) {
     const els = panel.querySelectorAll(".donkey-msg.ai");
     const el = els[els.length - 1];
@@ -254,6 +411,10 @@ Rules:
       case "ext-claude": return external("claude");
       case "ext-chatgpt": return external("chatgpt");
       case "setup": return setupBox();
+      case "pair": return pairDevice();
+      case "unpair-all": if (confirm("Unpair every phone and iPad from this Mac?")) unpairAll(); return;
+      case "unpair-me": paired.set(null); return renderLog();
+      case "copylink": navigator.clipboard?.writeText(b.dataset.link); return saved(b, "Copied");
       case "back": return renderLog();
       case "copycmd": navigator.clipboard?.writeText(b.previousElementSibling.textContent); return saved(b, "Copied");
       case "pasted": {
@@ -273,7 +434,8 @@ Rules:
     e.preventDefault();
     const ta = $(".donkey-form textarea"), q = ta.value.trim();
     if (!q || abort) return;
-    if (!helper || !chosenEngine()) return external("claude");
+    if (mode() === "fallback") return external("claude");
+    justPaired = false;
     ta.value = "";
     ask(q);
   });
@@ -286,6 +448,8 @@ Rules:
   // Show the button on lecture pages only (where annotations are attached).
   setInterval(() => { const ok = !!A()?.ready(); fab.hidden = !ok; if (!ok && !panel.hidden) close(); }, 700);
   addEventListener("hashchange", () => { about = null; if (!panel.hidden) setTimeout(() => open(), 400); });
+
+  if (justPaired) setTimeout(function wait() { A()?.ready() ? open() : setTimeout(wait, 500); }, 500);
 
   window.Donkey = { open };
 })();

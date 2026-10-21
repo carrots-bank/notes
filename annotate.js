@@ -689,6 +689,7 @@
   const heading = key => secEl(key)?.querySelector(":scope > h1, :scope > h2, :scope > h3, :scope > h4");
   const donkeyApi = {
     ready: () => !!doc,
+    relayAuth: () => ({ url: API, token: TOKEN }),
     path: () => doc?.path,
     title: () => doc?.article.querySelector("h1")?.childNodes[0]?.textContent?.trim() || doc?.path,
     notes: () => effective().map(x => x.md).join(""),
