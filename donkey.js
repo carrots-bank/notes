@@ -12,6 +12,11 @@
   const A = () => window.Annotate?.api;
   const pref = { get: () => { try { return localStorage.getItem("donkey_engine") || "auto"; } catch { return "auto"; } },
                  set: v => { try { localStorage.setItem("donkey_engine", v); } catch {} } };
+  const quality = { get: () => { try { return localStorage.getItem("donkey_quality") || "best"; } catch { return "best"; } },
+                    set: v => { try { localStorage.setItem("donkey_quality", v); } catch {} } };
+  // Claude: Best = Opus, Quick = Sonnet (aliases resolve to the newest the person's Claude Code knows). ChatGPT/Codex:
+  // its own default model either way.
+  const modelFor = engine => engine === "codex" ? "" : quality.get() === "quick" ? "sonnet" : "opus";
 
   // ---------- relay: pairing and end-to-end encryption (HMAC-SHA256 counter mode + HMAC tag) ----------
   const te = s => new TextEncoder().encode(s);
@@ -137,18 +142,16 @@ Rules:
     showEngine();
   }
   const macOnline = () => relayState && relayState.now - relayState.seen < 60000;
+  const NAMES = { claude: "Claude", codex: "ChatGPT" };
   function showEngine() {
-    const el = $(".donkey-engine"), e = chosenEngine();
-    if (mode() === "relay") {
-      el.innerHTML = !relayState || !relayState.seen ? "· via your Mac" : macOnline() ? "· via your Mac (online)" : "· your Mac seems offline (is it on and awake?)";
-      return;
-    }
-    if (!helper) { el.textContent = "· no helper on this device"; return; }
-    if (!e) { el.textContent = "· helper found, no AI tool"; return; }
-    const names = { claude: "your Claude", codex: "your ChatGPT" };
-    el.innerHTML = helper.engines.length > 1
-      ? `· <select data-d="engine">${helper.engines.map(x => `<option value="${x}"${x === e ? " selected" : ""}>${names[x]}</option>`).join("")}</select>`
-      : `· via ${names[e]}`;
+    const el = $(".donkey-engine"), m = mode();
+    if (m === "fallback") { el.textContent = helper ? "· helper found, no AI tool" : "· not connected"; return; }
+    const list = m === "local" ? helper.engines : ["claude", "codex"];
+    const e = m === "local" ? chosenEngine() : (list.includes(pref.get()) ? pref.get() : "claude");
+    const where = m === "relay" ? (!relayState || !relayState.seen ? " via your Mac" : macOnline() ? " via your Mac" : " · Mac offline?") : "";
+    el.innerHTML = `· <select data-d="engine" title="Which AI answers">${list.map(x => `<option value="${x}"${x === e ? " selected" : ""}>${NAMES[x]}</option>`).join("")}</select>` +
+      (e === "claude" ? ` <select data-d="quality" title="Answer quality"><option value="best"${quality.get() === "best" ? " selected" : ""}>Best (Opus)</option><option value="quick"${quality.get() === "quick" ? " selected" : ""}>Quick (Sonnet)</option></select>` : "") +
+      `<span class="muted">${escH(where)}</span>`;
   }
 
   // ---------- lecture context ----------
@@ -201,6 +204,7 @@ Rules:
     let html = list.map((m, i) => m.role === "user"
       ? `<div class="donkey-msg user">${escH(m.text)}</div>`
       : `<div class="donkey-msg ai${m.error ? " error" : ""}" data-i="${i}">${m.error ? escH(m.error) : md(m.text) || '<span class="muted">Thinking…</span>'}
+          ${m.done && !m.error && m.engine ? `<div class="donkey-by muted">answered by your ${NAMES[m.engine] || m.engine}${m.engine === "claude" ? (m.model === "sonnet" ? " · Sonnet" : " · Opus") : ""}</div>` : ""}
           ${m.done && !m.error ? `<div class="donkey-actions">
             <button class="btn ghost" data-d="side">💬 Keep as side note</button>
             <button class="btn ghost" data-d="note">📝 Add as my note</button>
@@ -251,7 +255,7 @@ Rules:
     const list = (chats[path] = chats[path] || []);
     const ctx = about ? { ...about } : {};
     list.push({ role: "user", text: question, about: ctx });
-    const msg = { role: "ai", text: "", about: ctx, done: false };
+    const msg = { role: "ai", text: "", about: ctx, done: false, model: quality.get() === "quick" ? "sonnet" : "opus" };
     list.push(msg);
     renderLog();
     const engine = chosenEngine();
@@ -260,7 +264,7 @@ Rules:
     if (mode() === "relay") return askRelay(question, ctx, msg);
     try {
       const r = await fetch(HELPER + "/ask", { method: "POST", signal: abort.signal, headers: { "content-type": "application/json" },
-        body: JSON.stringify({ engine, system: SYSTEM, prompt: await buildPrompt(question, ctx) }) });
+        body: JSON.stringify({ engine, model: modelFor(engine), system: SYSTEM, prompt: await buildPrompt(question, ctx) }) });
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `The helper answered ${r.status}`);
       const reader = r.body.getReader(), dec = new TextDecoder();
       let buf = "", last = 0;
@@ -273,6 +277,7 @@ Rules:
           const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
           if (!line.trim()) continue;
           const ev = JSON.parse(line);
+          if (ev.engine) msg.engine = ev.engine;
           if (ev.t) msg.text += ev.t;
           if (ev.error) throw new Error(ev.error);
         }
@@ -291,7 +296,8 @@ Rules:
   async function askRelay(question, ctx, msg) {
     const sig = abort.signal, key = paired.get().k;
     try {
-      const data = await seal(key, JSON.stringify({ engine: pref.get() === "auto" ? "" : pref.get(), system: SYSTEM, prompt: await buildPrompt(question, ctx) }));
+      const eng = pref.get() === "codex" ? "codex" : "claude";
+      const data = await seal(key, JSON.stringify({ engine: eng, model: modelFor(eng), system: SYSTEM, prompt: await buildPrompt(question, ctx) }));
       const job = await relayCall("POST", "job", { data });
       let from = 0, started = Date.now(), picked = false;
       for (;;) {
@@ -300,6 +306,7 @@ Rules:
         const st = await relayCall("GET", `job/${job.id}?from=${from}`);
         for (const c of st.chunks) {
           const ev = JSON.parse(await unseal(key, c));
+          if (ev.engine) msg.engine = ev.engine;
           if (ev.t) msg.text += ev.t;
           if (ev.error) throw new Error(ev.error);
         }
@@ -445,7 +452,11 @@ Rules:
       case "weave": { const m = lastAnswer(b); if (api.insertIntoSection(m.about?.key || api.sectionInView(), m.about?.quote?.exact, m.text)) saved(b, "Added into the text"); return; }
     }
   });
-  panel.addEventListener("change", e => { if (e.target.dataset.d === "engine") { pref.set(e.target.value); showEngine(); } });
+  panel.addEventListener("change", e => {
+    if (e.target.dataset.d === "engine") pref.set(e.target.value);
+    if (e.target.dataset.d === "quality") quality.set(e.target.value);
+    showEngine();
+  });
   $(".donkey-form").addEventListener("submit", e => {
     e.preventDefault();
     const ta = $(".donkey-form textarea"), q = ta.value.trim();

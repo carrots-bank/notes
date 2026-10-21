@@ -27,7 +27,7 @@ import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "3"
+VERSION = "4"
 PORT = int(os.environ.get("NOTES_HELPER_PORT", "47321"))
 ORIGINS = {o.strip() for o in os.environ.get("NOTES_HELPER_ORIGINS", "https://carrots-bank.github.io").split(",") if o.strip()}
 LOCAL = re.compile(r"^http://(localhost|127\.0\.0\.1)(:\d+)?$")
@@ -144,18 +144,42 @@ def run_claude(path, system, prompt, model):
 
 
 def run_codex(path, system, prompt, model):
-    """Codex (ChatGPT) has no token stream in exec mode: yield the final message once."""
+    """Codex (ChatGPT subscription) in exec mode, read-only, nothing saved; yields each finished message."""
     with tempfile.TemporaryDirectory() as cwd:
         out = os.path.join(cwd, "answer.md")
-        cmd = [path, "exec", "--skip-git-repo-check", "--sandbox", "read-only", "--output-last-message", out]
+        cmd = [path, "exec", "--skip-git-repo-check", "--sandbox", "read-only", "--ephemeral", "--color", "never",
+               "--json", "-o", out]
         if model:
             cmd += ["--model", model]
-        p = subprocess.run(cmd + ["-"], input=f"{system}\n\n{prompt}", capture_output=True, text=True,
-                           cwd=cwd, env=child_env(), timeout=600)
-        if p.returncode or not os.path.exists(out):
-            raise RuntimeError(_explain(p.stderr or p.stdout))
-        with open(out) as f:
-            yield f.read()
+        p = subprocess.Popen(cmd + ["-"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                             cwd=cwd, env=child_env(), text=True, bufsize=1)
+        try:
+            p.stdin.write(f"{system}\n\n{prompt}")
+            p.stdin.close()
+            said, error = False, ""
+            for line in p.stdout:
+                try:
+                    ev = json.loads(line)
+                except ValueError:
+                    continue
+                item = ev.get("item") or {}
+                if ev.get("type") == "item.completed" and item.get("type") == "agent_message" and item.get("text"):
+                    yield ("\n\n" if said else "") + item["text"]
+                    said = True
+                elif ev.get("type") in ("error", "turn.failed"):
+                    error = str(ev.get("message") or (ev.get("error") or {}).get("message") or "Codex reported an error")
+            p.wait(timeout=60)
+            if not said and os.path.exists(out):
+                with open(out) as f:
+                    text = f.read().strip()
+                if text:
+                    said = True
+                    yield text
+            if not said:
+                raise RuntimeError(_explain(error or p.stderr.read()))
+        finally:
+            if p.poll() is None:
+                p.kill()
 
 
 def _explain(err):

@@ -140,3 +140,5 @@ a.btn { text-decoration: none; }
 .donkey .pulse { animation: donkey-pulse .5s ease 3; }
 @keyframes donkey-pulse { 50% { box-shadow: 0 0 0 4px var(--accent); } }
 .donkey-ext { margin-top: 10px; } .donkey-ext > summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+.donkey-engine select { margin-left: 2px; padding: 1px 3px; }
+.donkey-by { font-size: 12px; margin-top: 6px; }
