@@ -27,7 +27,7 @@ import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-VERSION = "2"
+VERSION = "3"
 PORT = int(os.environ.get("NOTES_HELPER_PORT", "47321"))
 ORIGINS = {o.strip() for o in os.environ.get("NOTES_HELPER_ORIGINS", "https://carrots-bank.github.io").split(",") if o.strip()}
 LOCAL = re.compile(r"^http://(localhost|127\.0\.0\.1)(:\d+)?$")
@@ -37,8 +37,10 @@ EXTRA_PATH = [f"{HOME}/.local/bin", f"{HOME}/.claude/local", "/opt/homebrew/bin"
               f"{HOME}/.npm-global/bin", f"{HOME}/.bun/bin", f"{HOME}/.volta/bin"]
 SEARCH_PATH = os.pathsep.join([os.environ.get("PATH", "")] + EXTRA_PATH)
 BUSY = threading.Semaphore(2)
+WORKERS = {w.strip().rstrip("/") for w in os.environ.get("NOTES_HELPER_WORKERS", "").split(",") if w.strip()}
 CONFIG = os.environ.get("NOTES_HELPER_CONFIG") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "relay.json")
 CONFIG_LOCK = threading.Lock()
+POLL_SECONDS = 3  # how often the Mac checks its relay mailbox
 
 
 # ---------- end-to-end encryption for relayed jobs ----------
@@ -200,6 +202,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         ok, origin = self._origin_ok()
+        if self.path.split("?")[0] == "/connect":  # opened as a page (Safari can't call the helper from the site)
+            body = CONNECT_PAGE.encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            return self.wfile.write(body)
         if self.path == "/relay/config" and ok:
             cfg = load_config()
             return self._json(200, {"configured": bool(cfg.get("mailbox")), "mailbox": cfg.get("mailbox"),
@@ -263,22 +275,55 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             return self._json(400, {"error": "bad request"}, origin)
         cfg = load_config()
-        if self.path == "/relay/setup":  # the mailbox the website created for this Mac
-            if not (re.fullmatch(r"[0-9a-f]{32}", str(req.get("mailbox"))) and re.fullmatch(r"[0-9a-f]{64}", str(req.get("mac")))
-                    and re.match(r"^(https://|http://(127\.0\.0\.1|localhost)[:/])", str(req.get("worker", "")))):
+        if self.path == "/relay/connect":  # this person's mailbox (+ optionally one newly paired device)
+            worker = str(req.get("worker", "")).rstrip("/")
+            local_worker = re.match(r"^http://(127\.0\.0\.1|localhost)(:\d+)?$", worker)
+            if not (worker in WORKERS or (local_worker and not WORKERS)):
+                return self._json(403, {"error": "this helper only connects to its own notes site"}, origin)
+            if not (re.fullmatch(r"[0-9a-f]{32}", str(req.get("mailbox"))) and re.fullmatch(r"[0-9a-f]{64}", str(req.get("mac")))):
                 return self._json(400, {"error": "bad request"}, origin)
-            cfg = {"worker": req["worker"].rstrip("/"), "mailbox": req["mailbox"], "mac": req["mac"], "devices": {}}
-        elif self.path == "/relay/pair":  # a new phone/iPad: its id (hash of its secret) and the shared key
-            if not cfg.get("mailbox") or not (re.fullmatch(r"[0-9a-f]{64}", str(req.get("device")))
-                                              and re.fullmatch(r"[0-9a-f]{64}", str(req.get("key")))):
-                return self._json(400, {"error": "bad request"}, origin)
-            cfg.setdefault("devices", {})[req["device"]] = req["key"]
+            same = cfg.get("mailbox") == req["mailbox"] and cfg.get("worker") == worker
+            cfg = {"worker": worker, "mailbox": req["mailbox"], "mac": req["mac"], "devices": cfg.get("devices", {}) if same else {}}
+            if req.get("device"):
+                if not (re.fullmatch(r"[0-9a-f]{64}", str(req.get("device"))) and re.fullmatch(r"[0-9a-f]{64}", str(req.get("key")))):
+                    return self._json(400, {"error": "bad request"}, origin)
+                cfg["devices"][req["device"]] = req["key"]
         elif self.path == "/relay/unpair-all":
             cfg["devices"] = {}
         else:
             return self._json(404, {"error": "not found"}, origin)
         save_config(cfg)
         return self._json(200, {"ok": True}, origin)
+
+
+CONNECT_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Connect the donkey</title>
+<style>body{font:16px/1.5 -apple-system,BlinkMacSystemFont,sans-serif;max-width:520px;margin:12vh auto;padding:0 16px;color:#1d1d1f;background:#f7f6f3}
+@media(prefers-color-scheme:dark){body{color:#e8e6e3;background:#151618}}
+button{font:inherit;padding:10px 18px;border-radius:10px;border:0;background:#2f5bd3;color:#fff;cursor:pointer}
+.muted{opacity:.7;font-size:14px}</style></head><body>
+<h1>🫏 Connect the donkey</h1>
+<p id="what">Checking…</p>
+<p><button id="go" hidden>Connect</button></p>
+<p id="msg" class="muted"></p>
+<script>
+const msg = document.getElementById("msg"), go = document.getElementById("go"), what = document.getElementById("what");
+let req = null;
+try { req = JSON.parse(atob(location.hash.slice(1).replace(/-/g, "+").replace(/_/g, "/"))); } catch {}
+history.replaceState(null, "", location.pathname);
+if (!req || !req.worker) { what.textContent = "This link is incomplete. Go back to the notes and try again."; }
+else {
+  what.innerHTML = "Let your notes (<b>" + new URL(req.site || req.worker).host + "</b>) send 🫏 questions to this Mac's helper, answered with this Mac's AI account" + (req.device ? ", including from the browser or device you are pairing now." : ".");
+  go.hidden = false;
+}
+go.onclick = async () => {
+  go.disabled = true;
+  const r = await fetch("/relay/connect", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(req) });
+  const j = await r.json().catch(() => ({}));
+  if (r.ok) { what.textContent = "✓ Connected. You can close this tab and go back to the notes."; go.hidden = true; msg.textContent = ""; }
+  else { msg.textContent = "Couldn't connect: " + (j.error || r.status); go.disabled = false; }
+};
+</script></body></html>"""
 
 
 # ---------- relay loop: answer jobs from paired devices ----------
@@ -329,11 +374,14 @@ def relay_loop():
             time.sleep(5)
             continue
         try:
-            job = _call(cfg, "GET", "next?mailbox=" + cfg["mailbox"])
+            job = _call(cfg, "GET", "next?mailbox=" + cfg["mailbox"], timeout=15)
         except (urllib.error.URLError, OSError, ValueError):
             time.sleep(10)  # offline or asleep: try again later
             continue
-        if job and BUSY.acquire(timeout=60):
+        if not job:
+            time.sleep(POLL_SECONDS)
+            continue
+        if BUSY.acquire(timeout=60):
             def work(j=job):
                 try:
                     answer_job(cfg, j)

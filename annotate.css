@@ -136,3 +136,6 @@ body.donkey-open .donkey-fab { display: none; }
 @media print { .donkey, .donkey-fab { display: none !important; } }
 .donkey-qr { display: flex; justify-content: center; margin: 8px 0; }
 .donkey-qr svg { width: 220px; height: 220px; background: #fff; border-radius: 8px; }
+a.btn { text-decoration: none; }
+.donkey .pulse { animation: donkey-pulse .5s ease 3; }
+@keyframes donkey-pulse { 50% { box-shadow: 0 0 0 4px var(--accent); } }

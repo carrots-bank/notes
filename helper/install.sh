@@ -17,6 +17,8 @@ mkdir -p "$DIR" "$HOME/Library/LaunchAgents"
 if [ -n "${NOTES_HELPER_SRC:-}" ]; then cp "$NOTES_HELPER_SRC" "$DIR/notes-helper.py"
 else curl -fsSL "$SITE/helper/notes-helper.py" -o "$DIR/notes-helper.py"; fi
 ORIGIN="$(printf '%s' "$SITE" | sed -E 's#^(https?://[^/]+).*#\1#')"
+# The relay service this site uses (from its public site.json): the helper will only ever connect to that one.
+WORKER="${NOTES_HELPER_WORKERS:-$(curl -fsSL "$SITE/site.json" 2>/dev/null | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin).get("annotations",""))' 2>/dev/null || true)}"
 
 cat > "$PLIST" <<PL
 <?xml version="1.0" encoding="UTF-8"?>
@@ -24,7 +26,8 @@ cat > "$PLIST" <<PL
 <plist version="1.0"><dict>
   <key>Label</key><string>$LABEL</string>
   <key>ProgramArguments</key><array><string>/usr/bin/python3</string><string>$DIR/notes-helper.py</string></array>
-  <key>EnvironmentVariables</key><dict><key>NOTES_HELPER_ORIGINS</key><string>$ORIGIN</string></dict>
+  <key>EnvironmentVariables</key><dict><key>NOTES_HELPER_ORIGINS</key><string>$ORIGIN</string>
+    <key>NOTES_HELPER_WORKERS</key><string>$WORKER</string></dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>StandardErrorPath</key><string>$DIR/helper.err</string>

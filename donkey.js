@@ -217,8 +217,10 @@ Rules:
   function fallbackBox() {
     return `<div class="donkey-fallback">
       <p><strong>No donkey helper on this device.</strong> You can still ask your own Claude or ChatGPT: type your question below, then press a button. I copy the question with this lecture's slides, transcript and your notes, and open the chat for you: just paste (⌘V) and send.</p>
-      <div class="donkey-row"><button class="btn" data-d="ext-claude">Ask in Claude</button><button class="btn" data-d="ext-chatgpt">Ask in ChatGPT</button>
+      <div class="donkey-row"><a class="btn" data-d="ext" href="https://claude.ai/new" target="_blank" rel="noopener">Ask in Claude</a>
+        <a class="btn" data-d="ext" href="https://chatgpt.com/" target="_blank" rel="noopener">Ask in ChatGPT</a>
         <button class="btn ghost" data-d="setup">Set up on this laptop</button></div>
+      ${matchMedia("(pointer: fine)").matches ? `<p class="muted">Helper already installed on this Mac, but the browser can't reach it (Safari blocks that)? <button class="btn ghost" data-d="connect-me">Connect this browser to it</button></p>` : ""}
       <details class="donkey-paste"><summary>Paste the answer here to save it</summary>
         <textarea rows="4" placeholder="Paste the answer from Claude or ChatGPT"></textarea>
         <button class="btn" data-d="pasted">Use this answer</button></details>
@@ -315,32 +317,43 @@ Rules:
     renderLog();
   }
 
-  // On the Mac: create (once) this helper's mailbox, then pair one phone/iPad with a QR code.
-  async function pairDevice() {
+  // Connect this person's mailbox to the helper on this Mac, and pair either a phone/iPad (QR code) or this browser
+  // itself (for Safari, which can't call the helper directly). Chrome hands the details to the helper straight away;
+  // otherwise a link opens the helper's own page, where one click finishes it.
+  async function connect(thisDevice) {
     const log = $(".donkey-log");
-    log.innerHTML = `<p class="muted">Preparing a pairing code…</p>`;
+    log.innerHTML = `<p class="muted">Preparing…</p>`;
     try {
       const { url, token } = A().relayAuth();
       if (!url || !token) throw new Error("Sync isn't switched on for this account.");
-      const local = (path, body) => fetch(HELPER + path, { method: body ? "POST" : "GET", headers: { "content-type": "application/json" },
-        body: body ? JSON.stringify(body) : undefined }).then(r => r.ok ? r.json() : Promise.reject(new Error("helper " + r.status)));
       const remote = (path, body) => fetch(url + "/v1/relay/" + path, { method: "POST", headers: { authorization: "Bearer " + token,
         "content-type": "application/json" }, body: JSON.stringify(body) }).then(r => r.ok ? r.json() : Promise.reject(new Error("relay " + r.status)));
-      let cfg = await local("/relay/config");
-      if (!cfg.configured || cfg.worker !== url) {
-        const box = await remote("mailbox", {});
-        await local("/relay/setup", { worker: url, mailbox: box.mailbox, mac: box.mac });
-        cfg = { mailbox: box.mailbox };
-      }
+      const box = await remote("mailbox", {});
       const secret = toHex(rnd(32)), key = toHex(rnd(32)), device = await sha256hex(secret);
-      await remote("device", { mailbox: cfg.mailbox, device, label: "phone/iPad" });
-      await local("/relay/pair", { device, key });
-      const link = SITE + "#pair=" + btoa(JSON.stringify({ t: secret, k: key })).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+      await remote("device", { mailbox: box.mailbox, device, label: thisDevice ? "browser on the Mac" : "phone/iPad" });
+      const payload = { site: SITE, worker: url, mailbox: box.mailbox, mac: box.mac, device, key };
+      let direct = false;
+      try {
+        const r = await fetch(HELPER + "/relay/connect", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) });
+        direct = r.ok;
+      } catch {}
+      const b64url = o => btoa(JSON.stringify(o)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+      const finish = direct ? "" : `<li><strong>Finish on this Mac:</strong> <a class="btn primary" href="${HELPER}/connect#${b64url(payload)}" target="_blank" rel="noopener">Open the helper</a>
+          and click <em>Connect</em> on the page that opens (it's the helper on this Mac, so it only works here).</li>`;
+      if (thisDevice) {
+        paired.set({ t: secret, k: key });
+        relayState = null;
+        log.innerHTML = `<div class="donkey-setup"><h4>🔗 Connect this browser to the helper on this Mac</h4><ol>${finish}
+          <li>Then come back here and ask: questions go to this Mac's helper through the encrypted relay (a few seconds slower than Chrome).</li></ol>
+          ${direct ? "<p>✓ Connected.</p>" : ""}<button class="btn" data-d="back">Done</button></div>`;
+        return;
+      }
+      const link = SITE + "#pair=" + b64url({ t: secret, k: key });
       let qr = "";
       if (window.qrcode) { const q = qrcode(0, "M"); q.addData(link); q.make(); qr = q.createSvgTag({ cellSize: 4, margin: 2, scalable: true }); }
       log.innerHTML = `<div class="donkey-setup">
         <h4>📱 Pair a phone or iPad with this Mac</h4>
-        <ol><li>On the phone or iPad, scan this code with the camera (or send yourself the link and open it).</li>
+        <ol>${finish}<li>On the phone or iPad, scan this code with the camera (or send yourself the link and open it).</li>
             <li>Open it in the browser you use for the notes, and sign in there if asked.</li>
             <li>That's it: 🫏 on that device now asks this Mac, using your Claude. Keep the Mac on and awake.</li></ol>
         <div class="donkey-qr">${qr}</div>
@@ -349,7 +362,7 @@ Rules:
         <p><button class="btn ghost" data-d="unpair-all">Unpair all devices</button> <button class="btn" data-d="back">Done</button></p></div>`;
       log.querySelector("[data-d=copylink]").dataset.link = link;
     } catch (e) {
-      log.innerHTML = `<div class="donkey-msg ai error">Couldn't prepare pairing: ${escH(e.message)}</div><button class="btn" data-d="back">Back</button>`;
+      log.innerHTML = `<div class="donkey-msg ai error">Couldn't connect: ${escH(e.message)}</div><button class="btn" data-d="back">Back</button>`;
     }
   }
   async function unpairAll() {
@@ -367,30 +380,29 @@ Rules:
     if (el) { el.innerHTML = md(msg.text); const log = $(".donkey-log"); log.scrollTop = log.scrollHeight; }
   }
 
-  async function external(which) {
-    const q = $(".donkey-form textarea").value.trim();
-    if (!q) { $(".donkey-form textarea").focus(); $(".donkey-form textarea").placeholder = "Type your question first, then press the button"; return; }
+  // Called from the "Ask in Claude/ChatGPT" links: the link itself opens the tab (browsers never block that), we only
+  // copy the question with the lecture material, starting the copy inside the click so Safari allows it.
+  function external(e) {
+    const ta = $(".donkey-form textarea"), q = ta.value.trim();
+    if (!q) { e.preventDefault(); ta.focus(); ta.placeholder = "Type your question first, then press the button"; return; }
     const api = A(), path = api.path(), list = (chats[path] = chats[path] || []);
-    // Open the tab and start the copy within the click itself; browsers block both once we've awaited anything.
     const text = buildPrompt(q, about).then(p => SYSTEM + "\n\n" + p);
     let copied = false;
     try {
-      if (window.ClipboardItem && navigator.clipboard?.write) {
+      if (window.ClipboardItem && navigator.clipboard?.write)
         navigator.clipboard.write([new ClipboardItem({ "text/plain": text.then(t => new Blob([t], { type: "text/plain" })) })])
           .then(() => (copied = true)).catch(() => {});
-      }
     } catch {}
-    const tab = window.open(which === "claude" ? "https://claude.ai/new" : "https://chatgpt.com/", "_blank");
     list.push({ role: "user", text: q, about: { ...about } });
-    const t = await text;
-    await new Promise(r => setTimeout(r, 300));
-    if (!copied) { try { await navigator.clipboard.writeText(t); copied = true; } catch {} }
-    if (!copied) list.push({ role: "ai", error: "Couldn't copy automatically. Press ⌘C after selecting the box below, then paste it into the chat.", done: true });
-    if (!tab) list.push({ role: "ai", error: "The browser blocked the new tab: allow pop-ups for this site, or open claude.ai yourself and paste (⌘V).", done: true });
-    $(".donkey-form textarea").value = "";
-    renderLog();
-    const d = panel.querySelector(".donkey-paste");
-    if (d) d.open = true;
+    ta.value = "";
+    text.then(async t => {
+      await new Promise(r => setTimeout(r, 400));
+      if (!copied) { try { await navigator.clipboard.writeText(t); copied = true; } catch {} }
+      if (!copied) list.push({ role: "ai", error: "Couldn't copy automatically: your browser didn't allow it. Try the other browser, or use Chrome.", done: true });
+      renderLog();
+      const d = panel.querySelector(".donkey-paste");
+      if (d) d.open = true;
+    });
   }
 
   function lastAnswer(btn) {
@@ -399,7 +411,7 @@ Rules:
   }
   function saved(btn, label) { btn.textContent = "✓ " + label; btn.disabled = true; }
 
-  panel.addEventListener("click", async e => {
+  panel.addEventListener("click", e => {
     const b = e.target.closest("[data-d]");
     if (!b || b.tagName === "SELECT") return;
     const api = A();
@@ -408,14 +420,14 @@ Rules:
       case "stop": return abort?.abort();
       case "clear": chats[api.path()] = []; return renderLog();
       case "unabout": about = { key: about?.key || api.sectionInView() }; about.quote = null; return renderAbout();
-      case "ext-claude": return external("claude");
-      case "ext-chatgpt": return external("chatgpt");
+      case "ext": return external(e);
+      case "connect-me": return connect(true);
       case "setup": return setupBox();
-      case "pair": return pairDevice();
+      case "pair": return connect(false);
       case "unpair-all": if (confirm("Unpair every phone and iPad from this Mac?")) unpairAll(); return;
       case "unpair-me": paired.set(null); return renderLog();
       case "copylink": navigator.clipboard?.writeText(b.dataset.link); return saved(b, "Copied");
-      case "back": return renderLog();
+      case "back": showEngine(); renderLog(); return checkRelay();
       case "copycmd": navigator.clipboard?.writeText(b.previousElementSibling.textContent); return saved(b, "Copied");
       case "pasted": {
         const t = b.previousElementSibling.value.trim();
@@ -434,7 +446,10 @@ Rules:
     e.preventDefault();
     const ta = $(".donkey-form textarea"), q = ta.value.trim();
     if (!q || abort) return;
-    if (mode() === "fallback") return external("claude");
+    if (mode() === "fallback") {  // no AI on this device: point at the two links (they must be clicked to open a tab)
+      panel.querySelectorAll("[data-d=ext]").forEach(a => { a.classList.add("pulse"); setTimeout(() => a.classList.remove("pulse"), 1600); });
+      return;
+    }
     justPaired = false;
     ta.value = "";
     ask(q);
