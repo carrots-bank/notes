@@ -1,4 +1,4 @@
-// Read-only viewer for the encrypted library (see lecturenotes/site.py for the format).
+// Viewer for the encrypted library (annotations: annotate.js) (see lecturenotes/site.py for the format).
 // Every file is nonce(12) || AES-256-GCM ciphertext. site.json holds one key bundle per person, each wrapped under
 // PBKDF2-SHA256(password, salt): {"k": shared key, "x": [[index id, key], …]} where "x" lists the restricted
 // courses that person may open (each with its own encrypted index). We try each bundle with the given password.
@@ -8,6 +8,7 @@ const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": 
 const enc = p => p.split("/").map(encodeURIComponent).join("/");
 const KEY_STORE = "notes_key";
 let MANIFEST = null;
+let SITE = null;  // site.json (salt, wrapped keys, optional annotations URL)
 const FILE_KEY = {};  // path -> CryptoKey
 const blobUrls = new Map();
 
@@ -59,6 +60,7 @@ async function unlockWith(raw) {
   // raw is a JSON key bundle (or, from older sites, a bare 32-byte shared key)
   const bundle = raw.length === 32 ? { k: null, x: [] } : JSON.parse(new TextDecoder().decode(raw));
   const parts = [["manifest", await importKey(bundle.k ? hex(bundle.k) : raw)]];
+  window.Annotate?.init(bundle.a ? hex(bundle.a) : null, SITE?.annotations || "");
   for (const [id, k] of bundle.x) parts.push([id, await importKey(hex(k))]);
   const merged = { files: {}, tree: [] };
   for (const [id, key] of parts) {
@@ -69,6 +71,7 @@ async function unlockWith(raw) {
   MANIFEST = merged;
 }
 async function start() {
+  try { SITE = await (await fetch("site.json", { cache: "no-cache" })).json(); } catch {}
   const saved = store.get(KEY_STORE);
   if (saved) {
     try { await unlockWith(b64(saved)); return open(); } catch { store.del(KEY_STORE); }
@@ -78,8 +81,8 @@ async function start() {
     const f = e.target, msg = $("#msg");
     msg.textContent = "Opening…";
     try {
-      const site = await (await fetch("site.json", { cache: "no-cache" })).json();
-      const raw = await deriveKey(f.pw.value, site);
+      SITE = SITE || await (await fetch("site.json", { cache: "no-cache" })).json();
+      const raw = await deriveKey(f.pw.value, SITE);
       await unlockWith(raw);
       if (f.remember.checked) store.set(KEY_STORE, btoa(String.fromCharCode(...raw)));
       open();
@@ -145,6 +148,7 @@ async function showDoc(path) {
   main.querySelectorAll("thead").forEach(th => { if (![...th.querySelectorAll("th")].some(c => c.textContent.trim())) th.remove(); });
   main.querySelectorAll("table").forEach(t => { const w = document.createElement("div"); w.className = "table-wrap"; t.replaceWith(w); w.append(t); });
   main.scrollTo(0, 0); window.scrollTo(0, 0);
+  window.Annotate?.attach(path, main.querySelector("article.notes"));
 }
 
 function route() {
