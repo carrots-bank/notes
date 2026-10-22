@@ -44,6 +44,6 @@ if ! printf '%s' "${STATUS:-}" | grep -q '"claude"\|"codex"'; then
   echo
   echo "No AI tool found yet. Install one, sign in once, and the helper will find it:"
   echo "  Claude (Pro or Max plan):  curl -fsSL https://claude.ai/install.sh | bash   then run:  claude"
-  echo "  ChatGPT (Plus or Pro):     brew install codex                              then run:  codex login"
+  echo "  ChatGPT (Plus or Pro):     brew install --cask codex   (Homebrew from brew.sh)   then run:  codex login"
 fi
 echo "Done. Open the notes website and press 🫏."

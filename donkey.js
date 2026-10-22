@@ -238,11 +238,12 @@ Rules:
     const cmd = `curl -fsSL ${SITE}helper/install.sh | bash`;
     $(".donkey-log").innerHTML = `<div class="donkey-setup">
       <h4>Set up the donkey on your Mac (once, about 5 minutes)</h4>
+      <p class="muted">Mac only for now. On Windows, or without a paid plan, use "Ask in Claude / ChatGPT" instead.</p>
       <p>Answers then come from <em>your own</em> Claude or ChatGPT subscription, right here in the notes.</p>
       <ol>
         <li><strong>Install an AI tool and sign in once</strong> (in the Terminal app):
           <ul><li>Claude (Pro or Max plan): <code>curl -fsSL https://claude.ai/install.sh | bash</code>, then run <code>claude</code> and log in.</li>
-              <li>or ChatGPT (Plus or Pro): <code>brew install codex</code>, then run <code>codex login</code>.</li></ul></li>
+              <li>or ChatGPT (Plus or Pro): <code>brew install --cask codex</code>, then run <code>codex login</code> (needs Homebrew: install it first from <a href="https://brew.sh" target="_blank" rel="noopener">brew.sh</a>).</li></ul></li>
         <li><strong>Install the helper:</strong> <code>${escH(cmd)}</code> <button class="btn ghost" data-d="copycmd">Copy</button></li>
         <li><strong>Reload this page</strong> and press 🫏. If the browser asks to allow access to devices on your network, click <em>Allow</em> (that's the helper on your own laptop).</li>
       </ol>
