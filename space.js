@@ -89,6 +89,67 @@
     worldLoaded = true;
   }
 
+  // ---------- the World catalogue: library lectures + approved community items ----------
+  const UNSET_UNI = "Other";
+  function catalog() {
+    const M = V().manifest(), out = [];
+    for (const c of M.tree.filter(c => !c.restricted)) for (const m of c.modules) for (const l of m.lectures)
+      out.push({ key: "lib:" + l.path, ref: "#/doc/" + V().enc(l.path + "/notes.md"), title: l.title, date: l.date, uni: c.uni || c.name,
+        subject: c.name, topic: m.name, summary: l.summary || "", type: "Lecture notes", source: "Library" });
+    for (const w of worldItems.filter(x => x.status === "approved"))
+      out.push({ key: "w:" + w.id, ref: `#/world/${w.id}`, title: w.title, date: w.date, uni: w.uni || UNSET_UNI, subject: w.branch || "Unsorted",
+        topic: w.topic || "General", summary: w.summary || "", type: w.type || "Lecture notes", source: "Community", by: w.by });
+    return out;
+  }
+  // Recently opened pages (this device), for "Recently viewed" and recommendations.
+  const recent = () => { try { return JSON.parse(ls.get("space_recent", "[]")); } catch { return []; } };
+  function recordVisit(ref, title) {
+    if (!ref || !title) return;
+    ls.set("space_recent", JSON.stringify([{ ref, title, t: now() }, ...recent().filter(r => r.ref !== ref)].slice(0, 30)));
+  }
+
+  // ---------- search and recommendations (TF-IDF over title, place and summary) ----------
+  const STOP = new Set("the and for with from that this are was were into onto over under about between their there which what when where while have has had not but its it's our your you they them then than also more most such these those each other some any all can may will would should could lecture lectures notes week paper part section introduction".split(" "));
+  const words = t => (String(t || "").toLowerCase().normalize("NFKD").match(/[a-zÀ-ɏЀ-ӿ]{3,}/g) || []).filter(w => !STOP.has(w));
+  const docText = e => `${e.title} ${e.title} ${e.subject} ${e.topic} ${e.topic} ${e.uni} ${e.summary} ${e.type}`;
+  function vectors(entries) {
+    const df = new Map(), tfs = entries.map(e => { const tf = new Map(); for (const w of words(docText(e))) tf.set(w, (tf.get(w) || 0) + 1); return tf; });
+    for (const tf of tfs) for (const w of tf.keys()) df.set(w, (df.get(w) || 0) + 1);
+    const N = entries.length || 1;
+    return { df, N, vecs: tfs.map(tf => { const v = new Map(); let n = 0; for (const [w, c] of tf) { const x = (1 + Math.log(c)) * Math.log(1 + N / df.get(w)); v.set(w, x); n += x * x; } n = Math.sqrt(n) || 1; for (const [w, x] of v) v.set(w, x / n); return v; }) };
+  }
+  function searchCatalog(entries, q) {
+    const qs = words(q);
+    if (!qs.length) return entries.map(e => ({ e, s: 0 }));
+    const { vecs } = vectors(entries);
+    return entries.map((e, i) => {
+      const hay = docText(e).toLowerCase();
+      let s = 0;
+      for (const w of qs) { s += (vecs[i].get(w) || 0) * 3; if (hay.includes(w)) s += 0.2; for (const k of vecs[i].keys()) if (k !== w && k.startsWith(w)) { s += vecs[i].get(k); break; } }
+      if (e.title.toLowerCase().includes(q.trim().toLowerCase())) s += 1;
+      return { e, s };
+    }).filter(r => r.s > 0).sort((a, b) => b.s - a.s);
+  }
+  function recommend(entries, n = 8) {
+    const saved = new Set(live().filter(it => it.kind === "bookmark").map(it => it.ref));
+    const liked = [
+      ...live().filter(it => it.kind === "bookmark").map(it => ({ ref: it.ref, w: 3 })),
+      ...recent().slice(0, 15).map((r, i) => ({ ref: r.ref, w: 1.5 - i / 15 })),
+    ];
+    const own = live().filter(it => it.kind === "note").map(it => ({ title: it.title, subject: it.branch, topic: it.topic, uni: it.uni, summary: "", type: it.type || "" }));
+    const all = [...entries, ...own];
+    const { vecs } = vectors(all);
+    const profile = new Map(), add = (v, w) => { for (const [k, x] of v) profile.set(k, (profile.get(k) || 0) + x * w); };
+    liked.forEach(l => { const i = entries.findIndex(e => e.ref === l.ref); if (i >= 0) add(vecs[i], l.w); });
+    own.forEach((_, j) => add(vecs[entries.length + j], 2));
+    if (!profile.size) return { basis: false, items: [] };
+    const seen = new Set([...saved, ...recent().slice(0, 3).map(r => r.ref)]);
+    const scored = entries.map((e, i) => { let s = 0; for (const [k, x] of vecs[i]) s += x * (profile.get(k) || 0); return { e, s }; })
+      .filter(r => r.s > 0 && !seen.has(r.e.ref)).sort((a, b) => b.s - a.s);
+    const top = scored[0]?.s || 0;  // keep only reasonably close matches
+    return { basis: true, items: scored.filter(r => r.s >= top * 0.3).slice(0, n) };
+  }
+
   // ---------- sidebar ----------
   const tab = () => ls.get("space_tab", "mine");
   function renderSidebar(el) {
@@ -98,8 +159,22 @@
     const t = tab();
     el.innerHTML = `<div class="sp-tabs"><button data-tab="mine" class="${t === "mine" ? "on" : ""}">My space</button>
       <button data-tab="world" class="${t === "world" ? "on" : ""}">World</button></div>
-      <div class="sp-body">${t === "mine" ? mineHTML(M) : worldHTML(M)}</div>`;
+      <div class="sp-body">${t === "mine" ? mineHTML(M) : worldHTML()}</div>`;
     markActive();
+  }
+  // Nested folders: levels = [["uni", label], ...]; leaves rendered by `leaf`.
+  function tree(items, levels, leaf) {
+    if (!levels.length) return `<ul>${items.sort((x, y) => (y.date || "").localeCompare(x.date || "") || String(x.title).localeCompare(y.title)).map(leaf).join("")}</ul>`;
+    const [key, fallback] = levels[0], by = {};
+    for (const it of items) (by[it[key] || fallback] ||= []).push(it);
+    return Object.keys(by).sort((a, b) => (a === fallback) - (b === fallback) || a.localeCompare(b)).map(k =>
+      `<details><summary>${esc(k)}</summary>${tree(by[k], levels.slice(1), leaf)}</details>`).join("");
+  }
+  const li = (href, it, extra = "") => `<li data-q="${esc(`${it.uni || ""} ${it.subject || it.branch || ""} ${it.topic || ""} ${it.title}`.toLowerCase())}"><a href="${href}">${esc(it.date ? it.date + " · " : "")}${esc(it.title || "Untitled")}</a>${extra}</li>`;
+  function badge(it) {
+    const w = it.world && worldItems.find(x => x.id === it.world.id);
+    const st = w?.status;
+    return st && st !== "draft" ? `<span class="sp-badge ${st}">${{ pending: "in review", approved: "in World", rejected: "not accepted" }[st] || st}</span>` : "";
   }
   function libTree(courses) {
     return courses.map(c => `
@@ -111,40 +186,30 @@
           </details>`).join("")}
       </details>`).join("");
   }
-  function group(items, link) {
-    const by = {};
-    for (const it of items) ((by[it.branch || "Unsorted"] ||= {})[it.topic || "General"] ||= []).push(it);
-    return Object.keys(by).sort().map(b => `<details><summary>${esc(b)}</summary>${Object.keys(by[b]).sort().map(t => `
-      <details><summary>${esc(t)}</summary><ul>${by[b][t].sort((x, y) => (y.date || "").localeCompare(x.date || "")).map(it =>
-        `<li data-q="${esc(`${b} ${t} ${it.title}`.toLowerCase())}"><a href="${link(it)}">${esc(it.date ? it.date + " · " : "")}${esc(it.title || "Untitled")}</a>${badge(it)}</li>`).join("")}</ul></details>`).join("")}</details>`).join("");
-  }
-  function badge(it) {
-    const w = it.world && worldItems.find(x => x.id === it.world.id);
-    const st = w?.status || (it.status && it.status !== "approved" ? it.status : "");
-    return st && st !== "draft" ? `<span class="sp-badge ${st}">${{ pending: "in review", approved: "in World", rejected: "not accepted" }[st] || st}</span>` : "";
-  }
   function mineHTML(M) {
     const mine = (B?.m || []);
     const own = live().filter(it => it.kind === "note");
     const marks = live().filter(it => it.kind === "bookmark");
     const courses = M.tree.filter(c => mine.includes(c.name));
-    let h = enabled() ? `<a class="btn primary sp-new" href="#/new">＋ New notes</a>` : "";
+    let h = enabled() ? `<div class="sp-actions"><a class="btn primary" href="#/new">＋ New notes</a><a class="btn" href="#/write">＋ Write</a></div>` : "";
     if (!enabled()) h += `<p class="muted sp-hint">Press <strong>Lock</strong> and sign in again to switch on your own space.</p>`;
-    if (own.length) h += `<h3 class="sp-h">My notes</h3>` + group(own, it => `#/space/${it.id}`);
-    else if (enabled() && indexLoaded) h += `<p class="muted sp-hint">Your own notes will appear here. Press <strong>＋ New notes</strong> to make some from a recording and slides.</p>`;
+    if (own.length) h += `<h3 class="sp-h">My notes</h3>` + tree(own, [["uni", UNSET_UNI], ["branch", "Unsorted"], ["topic", "General"]], it => li(`#/space/${it.id}`, it, badge(it)));
+    else if (enabled() && indexLoaded) h += `<p class="muted sp-hint">Your own notes and material will appear here. Make notes from a recording and slides, or write your own.</p>`;
     if (marks.length) h += `<h3 class="sp-h">Saved</h3><ul class="sp-list">${marks.sort((a, b) => b.updated - a.updated).map(m =>
       `<li><a href="${esc(m.ref)}">${esc(m.title)}</a><button class="icon sp-x" data-unsave="${esc(m.id)}" title="Remove from My space">✕</button></li>`).join("")}</ul>`;
+    const rec = recent().filter(r => !marks.some(m => m.ref === r.ref)).slice(0, 6);
+    if (rec.length) h += `<h3 class="sp-h">Recently viewed</h3><ul class="sp-list">${rec.map(r => `<li><a href="${esc(r.ref)}">${esc(r.title)}</a></li>`).join("")}</ul>`;
     if (courses.length) h += `<h3 class="sp-h">My courses</h3>` + libTree(courses);
     return h;
   }
-  function worldHTML(M) {
-    const shared = M.tree.filter(c => !c.restricted);
-    const community = worldItems.filter(x => x.status === "approved");
+  function worldHTML() {
     const pending = worldItems.filter(x => x.status === "pending");
-    let h = `<input class="sp-search" type="search" placeholder="Search the World…" value="${esc(ls.get("space_q", ""))}">`;
+    let h = `<a class="btn primary sp-explore" href="#/world">🔎 Search the World</a>`;
     if (worldAdmin && pending.length) h += `<a class="btn sp-review" href="#/review">Review queue <span class="sp-count">${pending.length}</span></a>`;
-    if (community.length) h += `<h3 class="sp-h">Community notes</h3>` + group(community, it => `#/world/${it.id}`);
-    if (shared.length) h += `<h3 class="sp-h">Library</h3>` + libTree(shared);
+    h += `<input class="sp-search" type="search" placeholder="Filter this list…" value="${esc(ls.get("space_q", ""))}">`;
+    const entries = catalog();
+    h += `<h3 class="sp-h">By university</h3>` + tree(entries, [["uni", UNSET_UNI], ["subject", "Unsorted"], ["topic", "General"]],
+      e => li(e.ref, e, e.source === "Community" ? `<span class="sp-badge">community</span>` : ""));
     if (!enabled()) h += `<p class="muted sp-hint">Press <strong>Lock</strong> and sign in again to see community notes.</p>`;
     return h;
   }
@@ -181,6 +246,8 @@
     if ((m = h.match(/^\/world\/([0-9a-f]{32})$/))) return showWorld(m[1]), true;
     if (h === "/review") return showReview(), true;
     if (h === "/new") return showNew(), true;
+    if (h === "/write") return showWrite(), true;
+    if (h === "/world" || h.startsWith("/world?")) return showExplore(new URLSearchParams(h.split("?")[1] || "")), true;
     return false;
   }
   function home() {
@@ -249,9 +316,10 @@
   }
   async function moveNote(it) {
     if (!it) return;
-    const branch = prompt("Branch (e.g. a course or subject):", it.branch || ""); if (branch === null) return;
+    const uni = prompt("University (or another top-level folder, e.g. a theme):", it.uni || ""); if (uni === null) return;
+    const branch = prompt("Subject (e.g. a course):", it.branch || ""); if (branch === null) return;
     const topic = prompt("Topic (e.g. a module or theme):", it.topic || ""); if (topic === null) return;
-    await saveItems({ ...it, branch: branch.trim(), topic: topic.trim() });
+    await saveItems({ ...it, uni: uni.trim(), branch: branch.trim(), topic: topic.trim() });
   }
   async function deleteNote(it) {
     if (!it || !confirm(`Delete "${it.title}" from your space? This can't be undone.`)) return;
@@ -260,6 +328,11 @@
     location.hash = "#/";
   }
 
+  function summaryOf(md, limit = 420) {
+    const m = (md || "").match(/^## Overview\s*\n([\s\S]*?)(?=^\*\*By the end|^## )/m);
+    let t = (m ? m[1] : (md || "").replace(/^#.*$/m, "")).replace(/!\[[^\]]*\]\([^)]*\)|<[^>]+>/g, " ").replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/[*_`#>|]/g, "").replace(/\s+/g, " ").trim();
+    return t.length > limit ? t.slice(0, limit).replace(/\s\S*$/, "") + "…" : t;
+  }
   async function shareToWorld(id, note, it) {
     if (!WKEY) return alert("Sign in again to share notes.");
     it = it || index.items[id] || { id, kind: "note", ...(note.meta || {}) };
@@ -270,7 +343,8 @@
     const say = t => { bar.querySelector(".sp-progress")?.remove(); bar.insertAdjacentHTML("beforeend", `<span class="sp-progress muted">${esc(t)}</span>`); };
     try {
       say("Preparing…");
-      const meta = { title: it?.title || "Untitled", branch: it?.branch || "", topic: it?.topic || "", date: it?.date || "", by: by.trim() };
+      const meta = { title: it?.title || "Untitled", uni: it?.uni || "", branch: it?.branch || "", topic: it?.topic || "", date: it?.date || "",
+        type: it?.type || "Lecture notes", summary: summaryOf(note.md), by: by.trim() };
       const { id: wid } = await wcall("POST", "item", { meta: await wseal(meta), body: await wseal({ md: note.md, transcript: note.transcript || "", slides: note.slides || [] }) });
       const names = [...new Set([...(note.md || "").matchAll(/\]\((assets\/[^)\s]+)\)/g)].map(m => m[1]))];
       for (let i = 0; i < names.length; i++) {
@@ -294,6 +368,7 @@
     try { row = await wcall("GET", `item/${wid}`); meta = await wopen(row.meta); body = await wopen(row.body); }
     catch (e) { return page(`<section class="panel"><p>Couldn't open this note: ${esc(e.message)}</p></section>`); }
     const saved = live().find(it => it.kind === "bookmark" && it.ref === `#/world/${wid}`);
+    if (row.status === "approved") recordVisit(`#/world/${wid}`, meta.title);
     const bar = `<span class="sp-crumb">World › ${esc(meta.branch || "Unsorted")} › ${esc(meta.topic || "General")}${meta.by ? ` · by ${esc(meta.by)}` : ""}</span><span class="spacer"></span>
       ${row.status !== "approved" ? `<span class="sp-badge ${row.status}">${esc(row.status)}</span>` : ""}
       ${worldAdmin && row.status === "pending" ? `<button class="btn primary" data-w="approve">Approve</button><button class="btn" data-w="reject">Reject</button>` : ""}
@@ -329,6 +404,7 @@
   }
 
   // ---------- making new notes (on this laptop, through the helper) ----------
+  const unis = () => [...new Set([...catalog().map(e => e.uni), ...live().map(it => it.uni)].filter(u => u && u !== UNSET_UNI))].sort();
   function showNew() {
     const own = live().filter(it => it.kind === "note");
     const branches = [...new Set(own.map(it => it.branch).filter(Boolean))].sort();
@@ -336,7 +412,10 @@
     const el = page(`<section class="panel sp-new-page"><h1>New notes</h1>
       <p>Turn a lecture recording and its slides (or any documents) into detailed notes in the same format as the course notes, written by <em>your</em> Claude or ChatGPT on this laptop. They're saved privately in My space; you can share them to the World later.</p>
       <form class="sp-form">
-        <label>Branch <small class="muted">(a course, subject or area)</small>
+        <label>University <small class="muted">(top-level folder: a university, or a theme)</small>
+          <input name="uni" list="sp-unis" placeholder="e.g. University of Cambridge" value="${esc(ls.get("space_uni", ""))}"></label>
+        <datalist id="sp-unis">${unis().map(u => `<option value="${esc(u)}">`).join("")}</datalist>
+        <label>Subject <small class="muted">(a course, subject or area)</small>
           <input name="branch" list="sp-branches" required placeholder="e.g. Land Economy IB" value="${esc(ls.get("space_branch", ""))}"></label>
         <datalist id="sp-branches">${branches.map(b => `<option value="${esc(b)}">`).join("")}</datalist>
         <label>Topic <small class="muted">(a module, paper or theme)</small>
@@ -353,9 +432,9 @@
     el.querySelector(".sp-form").addEventListener("submit", e => {
       e.preventDefault();
       const f = new FormData(e.target), get = k => String(f.get(k) || "").trim();
-      ls.set("space_branch", get("branch")); ls.set("space_topic", get("topic"));
+      ls.set("space_branch", get("branch")); ls.set("space_topic", get("topic")); ls.set("space_uni", get("uni"));
       const payload = { site: location.origin + location.pathname, worker: SITE.annotations, secret: B.a,
-        branch: get("branch"), topic: get("topic"), title: get("title"), date: get("date") };
+        uni: get("uni"), branch: get("branch"), topic: get("topic"), title: get("title"), date: get("date") };
       const url = `${HELPER}/maker#` + btoa(unescape(encodeURIComponent(JSON.stringify(payload)))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
       const w = window.open(url, "_blank");
       e.target.insertAdjacentHTML("afterend", `<p class="sp-progress">The note maker opened in a new tab${w ? "" : " (if it didn't, allow pop-ups)"}. Add the recording and files there. When it finishes, the notes appear under <strong>My notes</strong> (press <a href="#/new" data-sp-refresh>refresh</a>).</p>`);
@@ -364,13 +443,108 @@
   document.addEventListener("click", e => { if (e.target.closest("[data-sp-refresh]")) { e.preventDefault(); refresh(); } });
   addEventListener("focus", () => { if (enabled() && indexLoaded) refresh(); });
 
+  // ---------- writing your own material ----------
+  const TYPES = ["Summary", "Revision notes", "Essay plan", "Exam answer", "Reading notes", "Lecture notes", "Other"];
+  function showWrite() {
+    const own = live().filter(it => it.kind === "note");
+    const list = (id, vals) => `<datalist id="${id}">${[...new Set(vals.filter(Boolean))].sort().map(v => `<option value="${esc(v)}">`).join("")}</datalist>`;
+    const el = page(`<section class="panel sp-new-page"><h1>Write material</h1>
+      <p>Write or paste your own notes, a summary, an essay plan… It's saved privately in My space, and you can share it to the World later. <a href="https://www.markdownguide.org/cheat-sheet/" target="_blank" rel="noopener">Markdown</a> works (# headings, **bold**, - lists, | tables |).</p>
+      <form class="sp-form">
+        <div class="sp-row"><label>University <input name="uni" list="w-unis" value="${esc(ls.get("space_uni", ""))}" placeholder="e.g. University of Cambridge"></label>
+          <label>Type <select name="type">${TYPES.map(t => `<option>${t}</option>`).join("")}</select></label></div>
+        <div class="sp-row"><label>Subject <input name="branch" list="w-br" required value="${esc(ls.get("space_branch", ""))}"></label>
+          <label>Topic <input name="topic" list="w-tp" required value="${esc(ls.get("space_topic", ""))}"></label></div>
+        ${list("w-unis", unis())}${list("w-br", own.map(i => i.branch))}${list("w-tp", own.map(i => i.topic))}
+        <label>Title <input name="title" required></label>
+        <label>Text <small class="muted">(or load a .md / .txt file: <input type="file" accept=".md,.txt,.markdown" data-load></small>
+          <textarea name="body" rows="16" required placeholder="# My title&#10;&#10;Write here…"></textarea></label>
+        <button class="btn primary" type="submit">Save to My space</button>
+      </form></section>`);
+    el.querySelector("[data-load]").addEventListener("change", async e => {
+      const f = e.target.files[0]; if (!f) return;
+      el.querySelector("textarea").value = await f.text();
+      if (!el.querySelector("[name=title]").value) el.querySelector("[name=title]").value = f.name.replace(/\.[^.]+$/, "");
+    });
+    el.querySelector(".sp-form").addEventListener("submit", async e => {
+      e.preventDefault();
+      const f = new FormData(e.target), get = k => String(f.get(k) || "").trim();
+      const btn = e.target.querySelector("button[type=submit]"); btn.disabled = true; btn.textContent = "Saving…";
+      const id = newId(), meta = { title: get("title"), uni: get("uni"), branch: get("branch"), topic: get("topic"),
+        date: new Date().toISOString().slice(0, 10), type: get("type") };
+      let md = get("body");
+      if (!/^#\s/m.test(md)) md = `# ${meta.title}\n\n` + md;
+      try {
+        await R().put("space:note:" + id, { v: 1, md, transcript: "", slides: [], meta });
+        await saveItems({ id, kind: "note", ...meta, created: now() });
+        ls.set("space_uni", meta.uni); ls.set("space_branch", meta.branch); ls.set("space_topic", meta.topic);
+        location.hash = "#/space/" + id;
+      } catch (err) { btn.disabled = false; btn.textContent = "Save to My space"; alert("Couldn't save: " + err.message); }
+    });
+  }
+
+  // ---------- the World screen: search, filters, recommendations ----------
+  function showExplore(params) {
+    const all = catalog();
+    const q = params.get("q") || "", f = { uni: params.get("uni") || "", subject: params.get("subject") || "", topic: params.get("topic") || "", type: params.get("type") || "" };
+    const link = patch => { const p = new URLSearchParams({ q, ...f, ...patch }); for (const [k, v] of [...p]) if (!v) p.delete(k); const s = p.toString(); return "#/world" + (s ? "?" + s : ""); };
+    let results = searchCatalog(all, q).filter(r => Object.entries(f).every(([k, v]) => !v || r.e[k] === v));
+    if (!q) results.sort((a, b) => (b.e.date || "").localeCompare(a.e.date || ""));
+    const facet = (key, label) => {
+      const counts = {};
+      for (const r of searchCatalog(all, q).filter(r => Object.entries(f).every(([k, v]) => k === key || !v || r.e[k] === v))) counts[r.e[key]] = (counts[r.e[key]] || 0) + 1;
+      const keys = Object.keys(counts).sort();
+      if (keys.length < 2 && !f[key]) return "";
+      return `<div class="wx-facet"><span class="wx-flabel">${label}</span>${f[key] ? `<a class="wx-chip on" href="${link({ [key]: "" })}">${esc(f[key])} ✕</a>` :
+        keys.map(k => `<a class="wx-chip" href="${link({ [key]: k })}">${esc(k)} <span>${counts[k]}</span></a>`).join("")}</div>`;
+    };
+    const card = r => {
+      const e = r.e, saved = live().some(it => it.kind === "bookmark" && it.ref === e.ref);
+      const snippet = highlight(e.summary, q);
+      return `<article class="wx-card"><div class="wx-meta">${esc(e.uni)} › ${esc(e.subject)} › ${esc(e.topic)}${e.date ? ` · ${esc(e.date)}` : ""}</div>
+        <h3><a href="${e.ref}">${highlight(e.title, q)}</a></h3>${snippet ? `<p>${snippet}</p>` : ""}
+        <div class="wx-foot"><span class="sp-badge ${e.source === "Community" ? "" : "lib"}">${esc(e.source === "Community" ? e.type : "Library")}</span>${e.by ? `<span class="muted">by ${esc(e.by)}</span>` : ""}
+        <span class="spacer"></span><button class="btn ghost" data-wx-save="${esc(e.ref)}" data-title="${esc(e.title)}">${saved ? "★ Saved" : "☆ Save"}</button></div></article>`;
+    };
+    const filtered = q || Object.values(f).some(Boolean);
+    let body = "";
+    if (filtered) body = `<p class="muted wx-count">${results.length} result${results.length === 1 ? "" : "s"}</p>` + (results.length ? results.slice(0, 60).map(card).join("") : `<p>Nothing found. Try fewer words or remove a filter.</p>`);
+    else {
+      const rec = recommend(all);
+      body += rec.items.length ? `<h2 class="wx-h">Recommended for you</h2><p class="muted">Based on what you've saved, made and read recently.</p>${rec.items.map(card).join("")}`
+        : `<h2 class="wx-h">Recommended for you</h2><p class="muted">Save notes (☆) or open a few lectures, and suggestions will appear here.</p>`;
+      const fresh = all.filter(e => e.source === "Community").sort((a, b) => (b.date || "").localeCompare(a.date || "")).slice(0, 6);
+      if (fresh.length) body += `<h2 class="wx-h">New from the community</h2>${fresh.map(e => card({ e })).join("")}`;
+      const byUni = {}; for (const e of all) (byUni[e.uni] ||= new Set()).add(e.subject);
+      body += `<h2 class="wx-h">Browse by university</h2><div class="wx-unis">${Object.keys(byUni).sort().map(u => `<a class="wx-uni" href="${link({ uni: u })}"><strong>${esc(u)}</strong><span>${[...byUni[u]].sort().map(esc).join(" · ")}</span></a>`).join("")}</div>`;
+    }
+    const el = page(`<section class="wx"><form class="wx-search"><input name="q" type="search" value="${esc(q)}" placeholder="Search notes, lectures and material in the World…" autocomplete="off"><button class="btn primary">Search</button></form>
+      <div class="wx-facets">${facet("uni", "University")}${facet("subject", "Subject")}${facet("topic", "Topic")}${facet("type", "Type")}</div>
+      <div class="wx-results">${body}</div></section>`);
+    const input = el.querySelector("input[name=q]");
+    if (!q) input.focus();
+    el.querySelector(".wx-search").addEventListener("submit", e => { e.preventDefault(); location.hash = link({ q: input.value.trim() }); });
+    el.addEventListener("click", async e => {
+      const b = e.target.closest("[data-wx-save]"); if (!b) return;
+      const ref = b.dataset.wxSave, it = live().find(x => x.kind === "bookmark" && x.ref === ref);
+      it ? await saveItems({ ...it, deleted: true }) : await saveItems({ id: "bm:" + ref, kind: "bookmark", ref, title: b.dataset.title });
+      b.textContent = it ? "☆ Save" : "★ Saved";
+    });
+  }
+  function highlight(text, q) {
+    let h = esc(text || "");
+    for (const w of words(q).sort((a, b) => b.length - a.length)) h = h.replace(new RegExp(`(${w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\w*)`, "gi"), "<mark class=\"wx-hit\">$1</mark>");
+    return h;
+  }
+
   // A star on library lectures, to keep them in My space.
   function decorateDoc(path) {
     if (!enabled() || !/\/notes(\.ru)?\.md$/.test(path)) return;
     const ref = "#/doc/" + V().enc(path), saved = live().find(it => it.kind === "bookmark" && it.ref === ref);
     const article = V().main.querySelector("article.notes");
     if (!article || V().main.querySelector(".sp-bar")) return;
-    const title = article.querySelector("h1")?.textContent.trim() || path.split("/").slice(-2, -1)[0];
+    const title = (article.querySelector("h1")?.textContent || path.split("/").slice(-2, -1)[0]).replace("✏️", "").trim();
+    recordVisit(ref, title);
     article.insertAdjacentHTML("beforebegin", `<div class="sp-bar"><span class="spacer"></span><button class="btn ${saved ? "" : "ghost"}" data-save-doc>${saved ? "★ In My space" : "☆ Save to My space"}</button></div>`);
     V().main.querySelector("[data-save-doc]").addEventListener("click", async () => {
       saved ? await saveItems({ ...saved, deleted: true }) : await saveItems({ id: "bm:" + path, kind: "bookmark", ref, title });

@@ -195,7 +195,7 @@ def transcribe(media, work):
 
 def brief(job, slides, handouts, transcript):
     parts = ["## Lecture details", "\n".join(f"- {k}: {v}" for k, v in (
-        ("title", job.get("title")), ("date", job.get("date")), ("course / branch", job.get("branch")),
+        ("title", job.get("title")), ("date", job.get("date")), ("university", job.get("uni")), ("course / branch", job.get("branch")),
         ("module / topic", job.get("topic"))) if v)]
     if slides:
         lines = []
@@ -264,7 +264,8 @@ def main():
             step(f"Saving images {i}/{len(used)}…")
             space.put(f"space:asset:{note_id}:{rel}", {"type": "image/jpeg", "b64": base64.b64encode(f.read_bytes()).decode()})
     step("Saving the notes to your space…")
-    meta = {k: job.get(k, "") for k in ("title", "branch", "topic", "date")}
+    meta = {k: job.get(k, "") for k in ("title", "uni", "branch", "topic", "date")}
+    meta["type"] = "Lecture notes"
     space.put(f"space:note:{note_id}", {"v": 1, "md": md, "transcript": transcript,
                                        "slides": [{"label": s["label"], "text": s.get("text", "")} for s in slides], "meta": meta})
     t = int(time.time() * 1000)

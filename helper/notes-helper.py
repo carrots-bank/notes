@@ -305,7 +305,7 @@ class Handler(BaseHTTPRequestHandler):
             jid = os.urandom(16).hex()
             d = os.path.join(JOBS_DIR, jid)
             os.makedirs(os.path.join(d, "files"))
-            job = {k: str(req.get(k, ""))[:300] for k in ("secret", "worker", "branch", "topic", "title", "date", "site")}
+            job = {k: str(req.get(k, ""))[:300] for k in ("secret", "worker", "uni", "branch", "topic", "title", "date", "site")}
             job.update(engine=engine, engine_path=found[engine], model="opus" if engine == "claude" else "")
             with open(os.path.join(d, "job.json"), "w") as f:
                 json.dump(job, f)
