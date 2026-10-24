@@ -14,8 +14,26 @@ if ! /usr/bin/python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) e
   exit 1
 fi
 mkdir -p "$DIR" "$HOME/Library/LaunchAgents"
-if [ -n "${NOTES_HELPER_SRC:-}" ]; then cp "$NOTES_HELPER_SRC" "$DIR/notes-helper.py"
-else curl -fsSL "$SITE/helper/notes-helper.py" -o "$DIR/notes-helper.py"; fi
+fetch() {  # fetch FILE: from the site, or from a local folder when testing (NOTES_HELPER_SRC = path to notes-helper.py)
+  if [ -n "${NOTES_HELPER_SRC:-}" ]; then cp "$(dirname "$NOTES_HELPER_SRC")/$1" "$DIR/$1"
+  else curl -fsSL "$SITE/helper/$1" -o "$DIR/$1"; fi
+}
+fetch notes-helper.py
+
+# --maker: also set up note-making (transcription + slides + notes in the course format) in its own Python environment.
+if [ "${1:-}" = "--maker" ]; then
+  if [ "$(uname -m)" != "arm64" ]; then
+    echo "Note-making needs a Mac with Apple Silicon (M1 or later). The rest of the helper is installed."
+  else
+    echo "Setting up note-making (one time: downloads ~900 MB of tools now and a ~1.6 GB speech model on first use)…"
+    fetch notes-maker.py
+    fetch notes_guide.md
+    [ -x "$DIR/venv/bin/python" ] || /usr/bin/python3 -m venv "$DIR/venv"
+    "$DIR/venv/bin/python" -m pip install --quiet --upgrade pip
+    "$DIR/venv/bin/python" -m pip install --quiet mlx-whisper imageio-ffmpeg pypdfium2 pillow python-pptx cryptography
+    "$DIR/venv/bin/python" -c "import mlx_whisper, imageio_ffmpeg, pypdfium2, PIL, pptx, cryptography" && echo "Note-making ready."
+  fi
+fi
 ORIGIN="$(printf '%s' "$SITE" | sed -E 's#^(https?://[^/]+).*#\1#')"
 # The relay service this site uses (from its public site.json): the helper will only ever connect to that one.
 WORKER="${NOTES_HELPER_WORKERS:-$(curl -fsSL "$SITE/site.json" 2>/dev/null | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin).get("annotations",""))' 2>/dev/null || true)}"

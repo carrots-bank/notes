@@ -142,3 +142,35 @@ a.btn { text-decoration: none; }
 .donkey-ext { margin-top: 10px; } .donkey-ext > summary { cursor: pointer; color: var(--muted); font-size: 13px; }
 .donkey-engine select { margin-left: 2px; padding: 1px 3px; }
 .donkey-by { font-size: 12px; margin-top: 6px; }
+
+/* My space / World (space.js) */
+.sp-tabs { display: flex; gap: 4px; padding: 0 4px 10px; border-bottom: 1px solid var(--border); margin-bottom: 10px; position: sticky; top: -12px; background: var(--surface); z-index: 2; padding-top: 4px; }
+.sp-tabs button { flex: 1; border: 1px solid var(--border); background: var(--bg); color: var(--text); border-radius: 8px; padding: 7px; font: 600 14px/1 var(--sans); cursor: pointer; }
+.sp-tabs button.on { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+.sp-body { padding: 0 2px; }
+.sp-h { font: 700 12px/1 var(--sans); text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 16px 8px 6px; }
+.sp-new, .sp-review { display: block; text-align: center; margin: 4px 6px 8px; }
+.sp-review { display: flex; justify-content: center; gap: 8px; }
+.sp-count { background: var(--bad); color: #fff; border-radius: 999px; padding: 0 7px; font-size: 12px; }
+.sp-hint { font-size: 13px; margin: 8px; }
+.sp-search { width: calc(100% - 12px); margin: 0 6px 6px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font: 14px var(--sans); }
+.sp-list { list-style: none; margin: 2px 0 8px; padding-left: 14px; }
+.sp-list li { display: flex; align-items: center; }
+.sp-list li a { flex: 1; }
+.sp-x { font-size: 12px; opacity: .5; }
+.sp-badge { font: 600 11px/1 var(--sans); padding: 3px 7px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); white-space: nowrap; }
+.sp-badge.pending { background: #fdecc8; color: var(--warn); }
+.sp-badge.rejected { background: #fbe0de; color: var(--bad); }
+#sidebar li .sp-badge { align-self: center; margin-left: 4px; }
+.sp-bar { max-width: 780px; margin: 0 auto 10px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font: 14px/1.3 var(--sans); }
+.annot-wide ~ .sp-bar, .sp-bar + .annot-shell { margin-top: 0; }
+.sp-bar .spacer { flex: 1; }
+.sp-crumb { color: var(--muted); }
+.sp-progress { font: 14px var(--sans); }
+.sp-new-page, .sp-review-page { font: 15px/1.5 var(--sans); }
+.sp-form { display: grid; gap: 12px; margin: 16px 0; }
+.sp-form label { display: grid; gap: 4px; font-weight: 600; }
+.sp-form input { font: 15px var(--sans); padding: 9px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-weight: 400; }
+.sp-need code { background: var(--code); padding: 2px 6px; border-radius: 4px; font-size: 12.5px; word-break: break-all; }
+.sp-review-page table { width: 100%; border-collapse: collapse; }
+.sp-review-page td, .sp-review-page th { border-bottom: 1px solid var(--border); padding: 8px; text-align: left; }

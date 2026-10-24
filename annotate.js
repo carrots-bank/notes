@@ -741,5 +741,49 @@
     },
   };
 
-  window.Annotate = { init, attach, api: donkeyApi };
+  // ---------- general encrypted records (used by space.js for a person's own notes, index and images) ----------
+  async function sealJSON(value) {
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, ENC, enc.encode(JSON.stringify(value)));
+    return b64e(iv) + "." + b64e(ct);
+  }
+  async function openJSON(data) {
+    const [iv, ct] = data.split(".").map(b64d);
+    return JSON.parse(dec.decode(await crypto.subtle.decrypt({ name: "AES-GCM", iv }, ENC, ct)));
+  }
+  async function recCall(path, method, body) {
+    const id = await docId(path);
+    const r = await fetch(`${API}/v1/doc/${id}`, { method, cache: "no-store",
+      headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok && r.status !== 409) throw new Error(j.error || "storage " + r.status);
+    return { status: r.status, ...j };
+  }
+  const records = {
+    ready: async () => !!(await ready),
+    async get(path) {
+      const r = await recCall(path, "GET");
+      return { value: r.data ? await openJSON(r.data) : null, updated: r.updated || 0 };
+    },
+    // Write `value`; if someone else saved since `base`, call merge(theirs) and retry.
+    async put(path, value, base = null, merge = null) {
+      if (base === null) {
+        const cur = await recCall(path, "GET");
+        base = cur.updated || 0;
+        if (merge && cur.data) value = merge(await openJSON(cur.data), value);  // keep changes from other devices
+      }
+      for (let i = 0; i < 4; i++) {
+        const r = await recCall(path, "PUT", { data: await sealJSON(value), base });
+        if (r.status !== 409) return { updated: r.updated, value };
+        const theirs = await openJSON(r.data);
+        base = r.updated;
+        if (!merge) throw new Error("conflict");
+        value = merge(theirs, value);
+      }
+      throw new Error("Couldn't save: too many conflicting saves");
+    },
+    async remove(path) { await this.put(path, { deleted: true }); },
+  };
+
+  window.Annotate = { init, attach, api: donkeyApi, records };
 })();

@@ -8,7 +8,8 @@ const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": 
 const enc = p => p.split("/").map(encodeURIComponent).join("/");
 const KEY_STORE = "notes_key";
 let MANIFEST = null;
-let SITE = null;  // site.json (salt, wrapped keys, optional annotations URL)
+let SITE = null;
+let BUNDLE = null;  // this person's unlocked key bundle (k shared, x restricted, a personal, w world, m own courses)  // site.json (salt, wrapped keys, optional annotations URL)
 const FILE_KEY = {};  // path -> CryptoKey
 const blobUrls = new Map();
 
@@ -61,12 +62,13 @@ async function unlockWith(raw) {
   const bundle = raw.length === 32 ? { k: null, x: [] } : JSON.parse(new TextDecoder().decode(raw));
   const parts = [["manifest", await importKey(bundle.k ? hex(bundle.k) : raw)]];
   window.Annotate?.init(bundle.a ? hex(bundle.a) : null, SITE?.annotations || "");
+  BUNDLE = bundle;
   for (const [id, k] of bundle.x) parts.push([id, await importKey(hex(k))]);
   const merged = { files: {}, tree: [] };
   for (const [id, key] of parts) {
     const m = JSON.parse(new TextDecoder().decode(await fetchBlob(id, key)));
     for (const [p, fid] of Object.entries(m.files)) { merged.files[p] = fid; FILE_KEY[p] = key; }
-    merged.tree.push(...m.tree);
+    merged.tree.push(...m.tree.map(c => id === "manifest" ? c : { ...c, restricted: true }));
   }
   MANIFEST = merged;
 }
@@ -92,6 +94,7 @@ async function start() {
 function open() {
   $("#lock").hidden = true;
   $("#app").hidden = $("#menu").hidden = $("#logout").hidden = false;
+  window.Space?.init(BUNDLE, SITE);
   renderSidebar();
   route();
 }
@@ -99,6 +102,7 @@ $("#logout").addEventListener("click", () => { store.del(KEY_STORE); location.ha
 
 // ---------- contents ----------
 function renderSidebar() {
+  if (window.Space) return window.Space.renderSidebar(sidebar);
   sidebar.innerHTML = MANIFEST.tree.map(c => `
     <details open><summary><a href="#/doc/${enc(c.name + "/README.md")}">${esc(c.name)}</a></summary>
       ${c.modules.map(m => `
@@ -110,6 +114,7 @@ function renderSidebar() {
   markActive();
 }
 function markActive() {
+  if (window.Space) return window.Space.markActive();
   sidebar.querySelectorAll("a").forEach(a => a.classList.toggle("active", a.getAttribute("href") === location.hash));
 }
 
@@ -126,6 +131,7 @@ async function showDoc(path) {
   const dir = path.split("/").slice(0, -1).join("/");
   window.Annotate?.attach(path, article, { secs, render: (el, parts, opts) => renderNotes(el, parts, path, opts),
     load: name => readText(dir + "/" + name).catch(() => null) });
+  window.Space?.decorateDoc(path);
 }
 
 // Markdown is rendered section by section (a section runs from one heading of level 1-4 to the next), each in a
@@ -162,8 +168,9 @@ function renderNotes(article, secs, path, opts = {}) {
     if (src) img.dataset.src = src;
     if (!src || /^(https?:|data:)/.test(src)) { if (src) img.src = src; return; }
     const target = resolve(src);
-    if (!MANIFEST.files[target]) return;
-    fileUrl(target).then(u => { img.src = u; });
+    const url = opts.resolve ? opts.resolve(target) : MANIFEST.files[target] ? fileUrl(target) : null;
+    if (!url) return;
+    Promise.resolve(url).then(u => { if (u) img.src = u; });
     if (!opts.forEdit) img.addEventListener("click", () => img.src && window.open(img.src, "_blank"));
   });
   article.querySelectorAll("a[href]").forEach(a => {
@@ -173,7 +180,7 @@ function renderNotes(article, secs, path, opts = {}) {
     if (/^(https?:|mailto:|#)/.test(href)) { if (/^https?:/.test(href)) a.target = "_blank"; return; }
     const target = resolve(href);
     if (target.endsWith(".md")) { a.href = "#/doc/" + enc(target); return; }
-    if (!MANIFEST.files[target]) { a.removeAttribute("href"); return; }
+    if (opts.resolve || !MANIFEST.files[target]) { a.removeAttribute("href"); return; }
     a.href = "#";
     a.addEventListener("click", async e => {
       e.preventDefault();
@@ -193,6 +200,8 @@ function route() {
   document.body.classList.remove("nav-open");
   const h = decodeURIComponent(location.hash.slice(1));
   if (h.startsWith("/doc/")) showDoc(h.slice(5));
+  else if (window.Space?.route(h)) { /* own notes, World items, review queue */ }
+  else if (window.Space) window.Space.home();
   else {
     const first = MANIFEST.tree[0]?.modules.flatMap(m => m.lectures)[0];
     location.replace(first ? "#/doc/" + enc(first.path + "/notes.md") : "#/doc/README.md");
@@ -203,3 +212,7 @@ function route() {
 window.addEventListener("hashchange", route);
 $("#menu").addEventListener("click", () => document.body.classList.toggle("nav-open"));
 start();
+
+// For space.js: the pieces it reuses to render and annotate notes from other sources.
+window.Viewer = { renderNotes, splitSections, readText, fileUrl, esc, enc, showDoc, main, sidebar,
+  manifest: () => MANIFEST };
