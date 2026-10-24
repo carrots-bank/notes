@@ -8,10 +8,10 @@ const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": 
 const enc = p => p.split("/").map(encodeURIComponent).join("/");
 const KEY_STORE = "notes_key";
 let MANIFEST = null;
-let SITE = null;
-let BUNDLE = null;
+let SITE = null;  // site.json (salt, wrapped keys, optional annotations URL)
+let BUNDLE = null;  // this person's unlocked key bundle (k shared, x restricted, a personal, w world, m own courses)
 // My space / World are switched on per person (bundle.sp) while they are being tried out.
-const SP = () => (window.Space && BUNDLE?.sp ? window.Space : null);  // this person's unlocked key bundle (k shared, x restricted, a personal, w world, m own courses)  // site.json (salt, wrapped keys, optional annotations URL)
+const SP = () => (window.Space && BUNDLE?.sp ? window.Space : null);
 const FILE_KEY = {};  // path -> CryptoKey
 const blobUrls = new Map();
 
