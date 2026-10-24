@@ -103,9 +103,9 @@
   }
   function libTree(courses) {
     return courses.map(c => `
-      <details open><summary><a href="#/doc/${V().enc(c.name + "/README.md")}">${esc(c.name)}</a></summary>
+      <details><summary><a href="#/doc/${V().enc(c.name + "/README.md")}">${esc(c.name)}</a></summary>
         ${c.modules.map(m => `
-          <details open><summary><a href="#/doc/${V().enc(`${c.name}/${m.name}/README.md`)}">${esc(m.name)}</a></summary>
+          <details><summary><a href="#/doc/${V().enc(`${c.name}/${m.name}/README.md`)}">${esc(m.name)}</a></summary>
             <ul>${m.lectures.map(l => `<li data-q="${esc((c.name + " " + m.name + " " + l.title).toLowerCase())}"><a href="#/doc/${V().enc(l.path + "/notes.md")}">${esc(l.date ? l.date + " · " : "")}${esc(l.title)}</a>
               ${l.ru ? `<a class="lang" href="#/doc/${V().enc(l.path + "/notes.ru.md")}">RU</a>` : ""}</li>`).join("")}</ul>
           </details>`).join("")}
@@ -114,8 +114,8 @@
   function group(items, link) {
     const by = {};
     for (const it of items) ((by[it.branch || "Unsorted"] ||= {})[it.topic || "General"] ||= []).push(it);
-    return Object.keys(by).sort().map(b => `<details open><summary>${esc(b)}</summary>${Object.keys(by[b]).sort().map(t => `
-      <details open><summary>${esc(t)}</summary><ul>${by[b][t].sort((x, y) => (y.date || "").localeCompare(x.date || "")).map(it =>
+    return Object.keys(by).sort().map(b => `<details><summary>${esc(b)}</summary>${Object.keys(by[b]).sort().map(t => `
+      <details><summary>${esc(t)}</summary><ul>${by[b][t].sort((x, y) => (y.date || "").localeCompare(x.date || "")).map(it =>
         `<li data-q="${esc(`${b} ${t} ${it.title}`.toLowerCase())}"><a href="${link(it)}">${esc(it.date ? it.date + " · " : "")}${esc(it.title || "Untitled")}</a>${badge(it)}</li>`).join("")}</ul></details>`).join("")}</details>`).join("");
   }
   function badge(it) {
@@ -161,6 +161,8 @@
   function markActive() {
     if (!sidebar) return;
     sidebar.querySelectorAll("a").forEach(a => a.classList.toggle("active", a.getAttribute("href") === location.hash));
+    // Folders start closed; open only the ones leading to the page being read.
+    for (let d = sidebar.querySelector("a.active")?.closest("details"); d; d = d.parentElement.closest("details")) d.open = true;
     const q = sidebar.querySelector(".sp-search");
     if (q && q.value) filterWorld(q.value);
   }
