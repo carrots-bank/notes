@@ -9,7 +9,9 @@ const enc = p => p.split("/").map(encodeURIComponent).join("/");
 const KEY_STORE = "notes_key";
 let MANIFEST = null;
 let SITE = null;
-let BUNDLE = null;  // this person's unlocked key bundle (k shared, x restricted, a personal, w world, m own courses)  // site.json (salt, wrapped keys, optional annotations URL)
+let BUNDLE = null;
+// My space / World are switched on per person (bundle.sp) while they are being tried out.
+const SP = () => (window.Space && BUNDLE?.sp ? window.Space : null);  // this person's unlocked key bundle (k shared, x restricted, a personal, w world, m own courses)  // site.json (salt, wrapped keys, optional annotations URL)
 const FILE_KEY = {};  // path -> CryptoKey
 const blobUrls = new Map();
 
@@ -94,7 +96,7 @@ async function start() {
 function open() {
   $("#lock").hidden = true;
   $("#app").hidden = $("#menu").hidden = $("#logout").hidden = false;
-  window.Space?.init(BUNDLE, SITE);
+  SP()?.init(BUNDLE, SITE);
   renderSidebar();
   route();
 }
@@ -102,7 +104,7 @@ $("#logout").addEventListener("click", () => { store.del(KEY_STORE); location.ha
 
 // ---------- contents ----------
 function renderSidebar() {
-  if (window.Space) return window.Space.renderSidebar(sidebar);
+  if (SP()) return SP().renderSidebar(sidebar);
   sidebar.innerHTML = MANIFEST.tree.map(c => `
     <details open><summary><a href="#/doc/${enc(c.name + "/README.md")}">${esc(c.name)}</a></summary>
       ${c.modules.map(m => `
@@ -114,7 +116,7 @@ function renderSidebar() {
   markActive();
 }
 function markActive() {
-  if (window.Space) return window.Space.markActive();
+  if (SP()) return SP().markActive();
   sidebar.querySelectorAll("a").forEach(a => a.classList.toggle("active", a.getAttribute("href") === location.hash));
 }
 
@@ -131,7 +133,7 @@ async function showDoc(path) {
   const dir = path.split("/").slice(0, -1).join("/");
   window.Annotate?.attach(path, article, { secs, render: (el, parts, opts) => renderNotes(el, parts, path, opts),
     load: name => readText(dir + "/" + name).catch(() => null) });
-  window.Space?.decorateDoc(path);
+  SP()?.decorateDoc(path);
 }
 
 // Markdown is rendered section by section (a section runs from one heading of level 1-4 to the next), each in a
@@ -200,8 +202,8 @@ function route() {
   document.body.classList.remove("nav-open");
   const h = decodeURIComponent(location.hash.slice(1));
   if (h.startsWith("/doc/")) showDoc(h.slice(5));
-  else if (window.Space?.route(h)) { /* own notes, World items, review queue */ }
-  else if (window.Space) window.Space.home();
+  else if (SP()?.route(h)) { /* own notes, World items, review queue */ }
+  else if (SP()) SP().home();
   else {
     const first = MANIFEST.tree[0]?.modules.flatMap(m => m.lectures)[0];
     location.replace(first ? "#/doc/" + enc(first.path + "/notes.md") : "#/doc/README.md");
