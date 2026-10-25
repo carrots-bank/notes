@@ -305,7 +305,18 @@ class Handler(BaseHTTPRequestHandler):
             jid = os.urandom(16).hex()
             d = os.path.join(JOBS_DIR, jid)
             os.makedirs(os.path.join(d, "files"))
-            job = {k: str(req.get(k, ""))[:300] for k in ("secret", "worker", "uni", "branch", "topic", "title", "date", "site")}
+            job = {k: str(req.get(k, ""))[:600] for k in ("secret", "worker", "uni", "branch", "topic", "title", "date", "site",
+                                                          "mode", "company", "kind", "view", "focus")}
+            job["test"] = bool(req.get("test"))
+            skills = req.get("skills") or {}
+            if job["mode"] == "pitch":  # Finance Town: the skill text comes from the person's (decrypted) site, never from disk
+                if not isinstance(skills, dict) or not skills or sum(len(str(v)) for v in skills.values()) > 400_000:
+                    return self._json(400, {"error": "Julian's skills didn't arrive. Start again from Finance Town."})
+                os.makedirs(os.path.join(d, "skills"))
+                for name, text in skills.items():
+                    if re.fullmatch(r"[a-z0-9-]{1,60}\.md", str(name)):
+                        with open(os.path.join(d, "skills", name), "w") as f:
+                            f.write(str(text))
             job.update(engine=engine, engine_path=found[engine], model="opus" if engine == "claude" else "")
             with open(os.path.join(d, "job.json"), "w") as f:
                 json.dump(job, f)
@@ -481,6 +492,25 @@ try { P = JSON.parse(decodeURIComponent(escape(atob(location.hash.slice(1).repla
 history.replaceState(null, "", location.pathname);
 if (!P || !P.secret) { $("form").innerHTML = "<p>Open this page from the notes website: My space &rarr; <strong>New notes</strong>.</p>"; }
 else { for (const k of ["branch", "topic", "title", "date"]) $(k).value = P[k] || ""; }
+const PITCH = P && P.mode === "pitch";
+if (PITCH) {  // Finance Town: Julian's stock-pitch skill
+  document.querySelector("h1").textContent = "Company pitch";
+  for (const id of ["branch", "topic", "title", "date"]) $(id).closest("label").hidden = true;
+  $("rec").closest(".drop").hidden = true;
+  const d = $("docs").closest(".drop");
+  d.querySelector("strong").textContent = "Filings and documents (optional)";
+  d.querySelector(".m").textContent = "Annual reports, 10-K/20-F, transcripts, broker notes, investor decks. Otherwise the research uses public sources.";
+  d.insertAdjacentHTML("beforebegin", `<p><strong>${(P.company || "").replace(/</g, "&lt;")}</strong> · ${{ quick: "Non-financial (quick pitch)", fig: "Financial (FIG pitch)" }[P.kind] || "Type chosen automatically"} · ${{ long: "Long view", short: "Short view" }[P.view] || "No prior view"}${P.focus ? " · Focus: " + P.focus.replace(/</g, "&lt;") : ""}</p>`);
+  $("go").textContent = "Prepare the pitch";
+}
+function getSkills() {  // from the notes tab that opened this page (it holds the decrypted skills)
+  return new Promise((ok, bad) => {
+    if (!window.opener) return bad(new Error("open this page from Finance Town in the notes website, and keep that tab open"));
+    const origin = new URL(P.site).origin, t = setTimeout(() => bad(new Error("the notes tab didn't answer: keep it open and try again")), 15000);
+    addEventListener("message", e => { if (e.origin === origin && e.data && e.data.type === "notes-maker:skills") { clearTimeout(t); ok(e.data.skills); } });
+    window.opener.postMessage({ type: "notes-maker:need-skills" }, origin);
+  });
+}
 fetch("/maker/status").then(r => r.json()).then(s => {
   const names = { claude: "Claude", codex: "ChatGPT" };
   if (!s.ready) { $("msg").innerHTML = "<span class=err>Note-making isn't installed on this laptop yet.</span> In Terminal run the install command shown on the New notes page (it ends with <code>--maker</code>)."; $("go").disabled = true; }
@@ -501,11 +531,12 @@ function put(id, file) {
 }
 $("go").onclick = async () => {
   const files = [...$("rec").files, ...$("docs").files];
-  if (!files.length) return $("msg").textContent = "Add a recording, slides or a document first.";
-  if (!$("title").value.trim()) return $("msg").textContent = "Give the notes a title.";
+  if (!PITCH && !files.length) return $("msg").textContent = "Add a recording, slides or a document first.";
+  if (!PITCH && !$("title").value.trim()) return $("msg").textContent = "Give the notes a title.";
   $("go").disabled = true; $("msg").textContent = "Starting…";
   try {
     const job = { ...P, branch: $("branch").value, topic: $("topic").value, title: $("title").value, date: $("date").value, engine: $("engine").value };
+    if (PITCH) job.skills = await getSkills();
     const r = await fetch("/maker/job", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(job) });
     const j = await r.json();
     if (!r.ok) throw new Error(j.error);
@@ -516,7 +547,7 @@ $("go").onclick = async () => {
     const tick = async () => {
       const s = await (await fetch(`/maker/job/${j.id}`)).json();
       $("steps").innerHTML = s.steps.map((t, i) => `<li class="${i === s.steps.length - 1 && s.state === "running" ? "now" : ""}">${t.replace(/</g, "&lt;")}</li>`).join("");
-      if (s.state === "done") { $("bar").max = 1; $("bar").value = 1; $("end").innerHTML = `Done: about ${s.words} words. <a href="${P.site}#/space/${s.note}">Open your notes</a>`; return; }
+      if (s.state === "done") { $("bar").max = 1; $("bar").value = 1; $("end").innerHTML = `Done: about ${s.words} words. <a href="${P.site}#/space/${s.note}">Open ${PITCH ? "the pitch" : "your notes"}</a>`; return; }
       if (s.state === "failed") { $("bar").hidden = true; $("end").innerHTML = `<span class=err>Couldn't make the notes: ${(s.error || "").replace(/</g, "&lt;")}</span>`; return; }
       setTimeout(tick, 2500);
     };

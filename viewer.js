@@ -78,7 +78,7 @@ async function start() {
   try { SITE = await (await fetch("site.json", { cache: "no-cache" })).json(); } catch {}
   const saved = store.get(KEY_STORE);
   if (saved) {
-    try { await unlockWith(b64(saved)); return open(); } catch { store.del(KEY_STORE); }
+    try { await unlockWith(b64(saved)); return openApp(); } catch { store.del(KEY_STORE); }
   }
   $("#unlock").addEventListener("submit", async e => {
     e.preventDefault();
@@ -89,11 +89,11 @@ async function start() {
       const raw = await deriveKey(f.pw.value, SITE);
       await unlockWith(raw);
       if (f.remember.checked) store.set(KEY_STORE, btoa(String.fromCharCode(...raw)));
-      open();
+      openApp();
     } catch { msg.textContent = "That password didn't work."; }
   });
 }
-function open() {
+function openApp() {
   $("#lock").hidden = true;
   $("#app").hidden = $("#menu").hidden = $("#logout").hidden = false;
   SP()?.init(BUNDLE, SITE);

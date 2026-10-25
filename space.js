@@ -158,8 +158,9 @@
     if (!M) return;
     const t = tab();
     el.innerHTML = `<div class="sp-tabs"><button data-tab="mine" class="${t === "mine" ? "on" : ""}">My space</button>
-      <button data-tab="world" class="${t === "world" ? "on" : ""}">World</button></div>
-      <div class="sp-body">${t === "mine" ? mineHTML(M) : worldHTML()}</div>`;
+      <button data-tab="world" class="${t === "world" ? "on" : ""}">World</button>
+      ${B?.fin ? `<button data-tab="fin" class="${t === "fin" ? "on" : ""}" title="Finance Town">🏦 Finance</button>` : ""}</div>
+      <div class="sp-body">${t === "fin" && B?.fin ? financeHTML() : t === "world" ? worldHTML() : mineHTML(M)}</div>`;
     markActive();
   }
   // Nested folders: levels = [["uni", label], ...]; leaves rendered by `leaf`.
@@ -188,7 +189,7 @@
   }
   function mineHTML(M) {
     const mine = (B?.m || []);
-    const own = live().filter(it => it.kind === "note");
+    const own = live().filter(it => it.kind === "note" && it.uni !== FINANCE);
     const marks = live().filter(it => it.kind === "bookmark");
     const courses = M.tree.filter(c => mine.includes(c.name));
     let h = enabled() ? `<div class="sp-actions"><a class="btn primary" href="#/new">＋ New notes</a><a class="btn" href="#/write">＋ Write</a></div>` : "";
@@ -202,6 +203,47 @@
     if (courses.length) h += `<h3 class="sp-h">My courses</h3>` + libTree(courses);
     return h;
   }
+  // ---------- Finance Town: Julian's stock-pitch skills, run by the person's own Claude through the helper ----------
+  const FINANCE = "Finance Town";
+  function financeHTML() {
+    const pitches = live().filter(it => it.kind === "note" && it.uni === FINANCE);
+    let h = `<a class="btn primary sp-explore" href="#/finance">＋ New company pitch</a>`;
+    h += pitches.length ? `<h3 class="sp-h">Pitches by sector</h3>` + tree(pitches, [["branch", "Unsorted"], ["topic", "Company"]], it => li(`#/space/${it.id}`, it, badge(it)))
+      : `<p class="muted sp-hint">Research memos made with Julian's long/short pitch skills appear here, filed by sector and company.</p>`;
+    return h;
+  }
+  function showPitchForm() {
+    if (!B?.fin) return page(`<section class="panel"><p>Finance Town isn't switched on for this account.</p></section>`);
+    const el = page(`<section class="panel sp-new-page"><h1>🏦 Finance Town: new company pitch</h1>
+      <p>Prepares a long/short research memo on a listed company with Julian's pitch skill: business model, how it makes money, margins, moat, industry, KPIs and the thesis (no valuation). Your Claude does the research on your laptop; the memo is saved here as a page and as a Word file.</p>
+      <form class="sp-form">
+        <label>Company or ticker <input name="company" required placeholder="e.g. Ryanair, RYA LN, Adyen"></label>
+        <div class="sp-row"><label>Type <select name="kind"><option value="auto">Choose automatically</option><option value="quick">Non-financial company (quick pitch)</option><option value="fig">Bank, insurer, asset manager, payments, exchange, fintech (FIG)</option></select></label>
+          <label>Your view <select name="view"><option value="">No prior view</option><option value="long">Long</option><option value="short">Short</option></select></label></div>
+        <label>Focus question <small class="muted">(optional)</small> <input name="focus" placeholder="e.g. Is the margin recovery sustainable?"></label>
+        <button class="btn primary" type="submit">Continue: add filings (optional) and start</button>
+      </form>
+      <div class="sp-need muted"><p><strong>Needs</strong> the 🫏 helper with note-making on this Mac and Claude Pro or higher. A full memo can take 20–60 minutes and uses a good part of a daily Claude allowance. Keep this tab open until the pitch has started.</p></div></section>`);
+    el.querySelector(".sp-form").addEventListener("submit", e => {
+      e.preventDefault();
+      const f = new FormData(e.target), get = k => String(f.get(k) || "").trim();
+      const payload = { mode: "pitch", site: location.origin + location.pathname, worker: SITE.annotations, secret: B.a,
+        company: get("company"), kind: get("kind"), view: get("view"), focus: get("focus"), date: new Date().toISOString().slice(0, 10),
+        uni: FINANCE, title: get("company") + " pitch", test: ls.get("finance_test", "") === "1" };  // test: a short memo
+      const url = `${HELPER}/maker#` + btoa(unescape(encodeURIComponent(JSON.stringify(payload)))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+      const w = window.open(url, "_blank");
+      e.target.insertAdjacentHTML("afterend", `<p class="sp-progress">The pitch maker opened in a new tab${w ? "" : " (if it didn't, allow pop-ups)"}. Add any filings there and press <em>Prepare the pitch</em>. Keep this tab open until it has started; the finished pitch appears in the 🏦 Finance tab.</p>`);
+    });
+  }
+  // The maker page asks this tab for Julian's skills (they are only ever decrypted here, for this account).
+  addEventListener("message", async e => {
+    if (e.origin !== HELPER || e.data?.type !== "notes-maker:need-skills" || !B?.fin) return;
+    const files = Object.keys(V().manifest().files).filter(p => p.startsWith(FINANCE + "/skills/"));
+    const skills = {};
+    for (const p of files) skills[p.split("/").pop()] = await V().readText(p);
+    e.source.postMessage({ type: "notes-maker:skills", skills }, HELPER);
+  });
+
   function worldHTML() {
     const pending = worldItems.filter(x => x.status === "pending");
     let h = `<a class="btn primary sp-explore" href="#/world">🔎 Search the World</a>`;
@@ -247,6 +289,7 @@
     if (h === "/review") return showReview(), true;
     if (h === "/new") return showNew(), true;
     if (h === "/write") return showWrite(), true;
+    if (h === "/finance") return showPitchForm(), true;
     if (h === "/world" || h.startsWith("/world?")) return showExplore(new URLSearchParams(h.split("?")[1] || "")), true;
     return false;
   }
@@ -294,6 +337,7 @@
     const bar = `<span class="sp-crumb">${esc(it?.branch || "Unsorted")} › ${esc(it?.topic || "General")}</span><span class="spacer"></span>
       ${w ? `<span class="sp-badge ${w.status}">${{ pending: "In review", approved: "In the World", rejected: "Not accepted" }[w.status] || w.status}</span>` : ""}
       ${!w || w.status === "rejected" ? `<button class="btn" data-sp="share">Share to World</button>` : ""}
+      ${note.docx ? `<button class="btn" data-sp="docx">⬇ Word</button>` : ""}
       <button class="btn ghost" data-sp="move">Move</button><button class="btn ghost" data-sp="download">Download</button>
       <button class="btn ghost" data-sp="delete">Delete</button>`;
     const el = renderNote(note, `space/${id}/notes.md`, bar, target => {
@@ -306,7 +350,16 @@
       if (a === "move") moveNote(it);
       if (a === "delete") deleteNote(it);
       if (a === "download") download(`${it?.title || "notes"}.md`, note.md);
+      if (a === "docx") downloadDocx(id, note.docx, it?.title);
     });
+  }
+  async function downloadDocx(id, rel, title) {
+    const v = (await R().get(`space:asset:${id}:${rel}`)).value;
+    if (!v?.b64) return alert("The Word file isn't available.");
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([b64d(v.b64)], { type: v.type }));
+    a.download = (v.name || `${title || "memo"}.docx`).replace(/[\\/:*?"<>|]/g, "-");
+    a.click();
   }
   function download(name, text) {
     const a = document.createElement("a");

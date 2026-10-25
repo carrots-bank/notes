@@ -233,9 +233,91 @@ def write_notes(work, engine, engine_path, model):
     return (work / "notes.md").read_text()
 
 
+PITCH_KINDS = {"quick": "julians-quick-stock-pitch", "fig": "julians-fig-stock-pitch"}
+
+
+def make_pitch(work, job, space):
+    """Finance Town: run Julian's stock-pitch skill with the person's Claude; save memo page + .docx."""
+    skills = work / "skills"
+    if not any(skills.glob("*.md")):
+        raise RuntimeError("Julian's skills didn't arrive: start again from Finance Town in the notes website.")
+    py = work / "py"  # a short name for the maker's Python (it has python-docx), so Claude can run it
+    if not py.exists():  # a wrapper, not a symlink: a venv's python only finds its packages when called by its own path
+        py.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n')
+        py.chmod(0o755)
+    files = sorted((work / "files").iterdir())
+    kind = job.get("kind", "auto")
+    which = (f"Use the skill in skills/{PITCH_KINDS[kind]}.md." if kind in PITCH_KINDS else
+             "Read the descriptions at the top of both skills in skills/ and use the one that fits this company: "
+             "julians-fig-stock-pitch for banks, insurers, asset/wealth managers, brokers, exchanges, payments, lenders "
+             "and fintechs; julians-quick-stock-pitch for every other listed company.")
+    view = {"long": "Directional prior: long.", "short": "Directional prior: short."}.get(job.get("view"), "No directional prior: form your own view.")
+    prompt = (
+        f"You are preparing Julian's equity research memo. {which} Follow that skill exactly: its steps, research standards, "
+        f"writing style and memo structure. Company: {job.get('company')}. {view} "
+        + (f"Focus question: {job['focus']}. " if job.get("focus") else "")
+        + (f"Files the user attached (primary sources; read them first): {', '.join('files/' + f.name for f in files)}. " if files else "")
+        + "Research with WebSearch and WebFetch as the skill requires, and record your sources. "
+        "Deliverables, all in the current folder: (1) memo.docx, the Word memo exactly as the skill specifies. Where the skill "
+        "says to read the docx skill, instead write a Python script that builds the .docx with the python-docx library and run it "
+        "with `./py build_docx.py` (that Python has python-docx installed). (2) memo.md, the same memo in Markdown for reading on "
+        "the web: the same sections and wording, tables as Markdown tables, starting with '# <Company> (<ticker>): <long/short "
+        "thesis in a few words>'. (3) meta.json: {\"company\": ..., \"ticker\": ..., \"sector\": ..., \"direction\": \"Long\"|\"Short\"}. "
+        "Do not modify other files."
+        + (" TEST RUN: keep the memo to about 300 words and use at most 2 web searches." if job.get("test") else ""))
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("CLAUDECODE", "CLAUDE_CODE_")) and k != "ANTHROPIC_API_KEY"}
+    if job.get("engine") == "codex":
+        cmd = [job["engine_path"], "exec", "--skip-git-repo-check", "--sandbox", "workspace-write", "--search",
+               "-c", "sandbox_workspace_write.network_access=true", "--color", "never", prompt]
+    else:
+        cmd = [job["engine_path"], "-p", prompt, "--permission-mode", "acceptEdits", "--allowedTools", "Read", "Write", "Edit",
+               "Glob", "Grep", "WebSearch", "WebFetch", "Bash(./py:*)", "--model", job.get("model") or "opus"]
+    step("Researching and writing the pitch with your " + ("ChatGPT" if job.get("engine") == "codex" else "Claude")
+         + " (a full memo can take 20–60 minutes)…")
+    p = subprocess.run(cmd, cwd=work, env=env, capture_output=True, text=True, timeout=4 * 3600)
+    if not (work / "memo.md").exists():
+        err = (p.stderr or p.stdout or "")[-600:]
+        if re.search(r"log ?in|auth|credential|401", err, re.I):
+            raise RuntimeError("Your AI tool isn't signed in: run `claude` (or `codex login`) once in Terminal.")
+        raise RuntimeError("The AI didn't produce the memo. " + err)
+    md = (work / "memo.md").read_text()
+    try:
+        info = json.loads((work / "meta.json").read_text())
+    except (OSError, ValueError):
+        info = {}
+    note_id = secrets.token_hex(12)
+    docx_rel = None
+    if (work / "memo.docx").is_file():
+        data = (work / "memo.docx").read_bytes()
+        if len(data) < 1_300_000:
+            step("Saving the Word file…")
+            docx_rel = "files/memo.docx"
+            space.put(f"space:asset:{note_id}:{docx_rel}", {"type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                                           "name": f"{info.get('company') or job.get('company')} pitch.docx",
+                                                           "b64": base64.b64encode(data).decode()})
+        else:
+            step("The Word file is too large to store online; the memo page is saved.")
+    company = info.get("company") or job.get("company") or "Company"
+    direction = info.get("direction") or ""
+    meta = {"title": f"{company}{' (' + info['ticker'] + ')' if info.get('ticker') else ''}{': ' + direction + ' pitch' if direction else ' pitch'}",
+            "uni": "Finance Town", "branch": info.get("sector") or "Unsorted", "topic": company,
+            "date": job.get("date") or time.strftime("%Y-%m-%d"), "type": "Stock pitch"}
+    step("Saving the pitch to Finance Town…")
+    space.put(f"space:note:{note_id}", {"v": 1, "md": md, "transcript": "", "slides": [], "meta": meta, "docx": docx_rel})
+    t = int(time.time() * 1000)
+    space.put("space:index", {"v": 1, "items": {note_id: {"id": note_id, "kind": "note", **meta, "created": t, "updated": t}}},
+              merge=lambda theirs, mine: merge_index(theirs, mine))
+    say(done=True, id=note_id, words=len(md.split()))
+
+
 def main():
     work = Path(sys.argv[1])
     job = json.loads((work / "job.json").read_text())
+    if job.get("mode") == "pitch":
+        space = Space(job["secret"], job["worker"])
+        step("Checking your space…")
+        space.get("space:index")
+        return make_pitch(work, job, space)
     files = sorted((work / "files").iterdir())
     assets = work / "assets"
     assets.mkdir(exist_ok=True)

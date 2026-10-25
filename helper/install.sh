@@ -30,8 +30,8 @@ if [ "${1:-}" = "--maker" ]; then
     fetch notes_guide.md
     [ -x "$DIR/venv/bin/python" ] || /usr/bin/python3 -m venv "$DIR/venv"
     "$DIR/venv/bin/python" -m pip install --quiet --upgrade pip
-    "$DIR/venv/bin/python" -m pip install --quiet mlx-whisper imageio-ffmpeg pypdfium2 pillow python-pptx cryptography
-    "$DIR/venv/bin/python" -c "import mlx_whisper, imageio_ffmpeg, pypdfium2, PIL, pptx, cryptography" && echo "Note-making ready."
+    "$DIR/venv/bin/python" -m pip install --quiet mlx-whisper imageio-ffmpeg pypdfium2 pillow python-pptx python-docx cryptography
+    "$DIR/venv/bin/python" -c "import mlx_whisper, imageio_ffmpeg, pypdfium2, PIL, pptx, docx, cryptography" && echo "Note-making ready."
   fi
 fi
 ORIGIN="$(printf '%s' "$SITE" | sed -E 's#^(https?://[^/]+).*#\1#')"
