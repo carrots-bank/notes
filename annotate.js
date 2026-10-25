@@ -15,7 +15,7 @@
   const SALT = new TextEncoder().encode("lecture-notes-annotations");
   const enc = new TextEncoder(), dec = new TextDecoder();
   const toHex = buf => [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, "0")).join("");
-  const b64e = buf => btoa(String.fromCharCode(...new Uint8Array(buf)));
+  const b64e = buf => { const b = new Uint8Array(buf); let s = ""; for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode(...b.subarray(i, i + 0x8000)); return btoa(s); };
   const b64d = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
   const escH = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const md = s => DOMPurify.sanitize(marked.parse(s || ""));
@@ -688,7 +688,7 @@
   }
   const heading = key => secEl(key)?.querySelector(":scope > h1, :scope > h2, :scope > h3, :scope > h4");
   const donkeyApi = {
-    ready: () => !!doc,
+    ready: () => !!doc && doc.article.isConnected,
     relayAuth: () => ({ url: API, token: TOKEN }),
     path: () => doc?.path,
     title: () => doc?.article.querySelector("h1")?.childNodes[0]?.textContent?.trim() || doc?.path,

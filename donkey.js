@@ -79,6 +79,23 @@ Rules:
 4. Write Markdown. Be focused: short paragraphs, lists where useful, no preamble and no closing offers.
 5. If asked to write or rewrite text for the notes, write it in the notes' own style, ready to paste in.
 6. Reply in the language of the question.`;
+  const FILE_SYSTEM = `You are the study assistant (a friendly donkey 🫏) inside a university student's notes app.
+You are given the text of one or more files from the student's library (readings, articles, slides, past papers…),
+extracted automatically, so layout, tables and figures may be lost.
+Rules:
+1. Base the answer on these files first and say where things come from (file name, and page or slide when marked).
+2. If the files don't cover something, say so plainly, then give the standard textbook answer, clearly labelled as
+   going beyond the files. Never invent what a file says.
+3. Explain clearly for a university student; give a concrete example when it helps.
+4. Write Markdown. Be focused: short paragraphs, lists where useful, no preamble and no closing offers.
+5. Reply in the language of the question.`;
+  const FILE_CHARS = 400000;  // total file text sent with one question
+
+  // Files as context (set by space.js on library pages): {hash, key, title, files: async () => [{name, text}], save?}.
+  // It applies only while the page it was set on is open.
+  let files = null;
+  const fileCtx = () => (files && files.hash === location.hash ? files : null);
+  const chatKey = () => fileCtx()?.key || A()?.path();
 
   const fab = document.createElement("button");
   fab.className = "donkey-fab";
@@ -165,7 +182,23 @@ Rules:
     } catch {}
     return { title: api.title(), slides, transcript: (transcript || "").trim(), notes: api.notes() };
   }
+  async function filePrompt(question, fc) {
+    const list = await fc.files();
+    const per = Math.floor(FILE_CHARS / Math.max(1, list.length));
+    const parts = [`# Files from the student's library: ${fc.title}`];
+    for (const f of list) {
+      const t = (f.text || "").trim();
+      parts.push(`## File: ${f.name}\n` + (!t ? "(no text could be read from this file, e.g. a scan or an image)"
+        : t.length > per ? t.slice(0, per) + "\n[…the rest of this file is cut to fit]" : t));
+    }
+    const history = (chats[chatKey()] || []).slice(0, -1).filter(x => x.text);
+    if (history.length) parts.push("## Conversation so far\n" + history.map(x => `${x.role === "user" ? "Student" : "You"}: ${x.text}`).join("\n\n"));
+    parts.push("## The student's question or request\n" + question);
+    return parts.join("\n\n");
+  }
   async function buildPrompt(question, ctx) {
+    const fc = fileCtx();
+    if (fc) return filePrompt(question, fc);
     const m = await materials(), api = A();
     const parts = [`# Lecture: ${m.title}`];
     parts.push("## Slides (text of each slide)\n" + (m.slides || "(no slide text available)"));
@@ -183,8 +216,9 @@ Rules:
   // ---------- panel ----------
   function open(ctx = {}) {
     const api = A();
-    if (!api?.ready()) return;
-    about = ctx.quote || ctx.key ? ctx : { key: api.sectionInView() };
+    if (fileCtx()) about = null;
+    else if (!api?.ready()) return;
+    else about = ctx.quote || ctx.key ? ctx : { key: api.sectionInView() };
     panel.hidden = false;
     document.body.classList.add("donkey-open");
     renderAbout();
@@ -194,18 +228,22 @@ Rules:
   }
   function close() { panel.hidden = true; document.body.classList.remove("donkey-open"); }
   function renderAbout() {
-    const api = A(), q = about?.quote?.exact;
+    const api = A(), q = about?.quote?.exact, fc = fileCtx();
+    if (fc) return void ($(".donkey-about").innerHTML = `<div class="donkey-chip muted">About: ${escH(fc.title)}</div>`);
     $(".donkey-about").innerHTML = q
       ? `<div class="donkey-chip">About: “${escH(q.length > 160 ? q.slice(0, 160) + "…" : q)}” <button class="icon" data-d="unabout" title="Ask about the whole lecture">✕</button></div>`
       : about?.key ? `<div class="donkey-chip muted">Section: ${escH(api.sectionHeading(about.key))} · whole lecture as context</div>` : "";
   }
   function renderLog() {
-    const log = $(".donkey-log"), list = chats[A()?.path()] || [];
+    const log = $(".donkey-log"), list = chats[chatKey()] || [], fc = fileCtx();
     let html = list.map((m, i) => m.role === "user"
       ? `<div class="donkey-msg user">${escH(m.text)}</div>`
       : `<div class="donkey-msg ai${m.error ? " error" : ""}" data-i="${i}">${m.error ? escH(m.error) : md(m.text) || '<span class="muted">Thinking…</span>'}
           ${m.done && !m.error && m.engine ? `<div class="donkey-by muted">answered by your ${NAMES[m.engine] || m.engine}${m.engine === "claude" ? (m.model === "sonnet" ? " · Sonnet" : " · Opus") : ""}</div>` : ""}
-          ${m.done && !m.error ? `<div class="donkey-actions">
+          ${m.done && !m.error && fc ? `<div class="donkey-actions">
+            ${fc.save ? `<button class="btn ghost" data-d="savefile">📝 Save to My space</button>` : ""}
+            <button class="btn ghost" data-d="copy">Copy</button></div>` : ""}
+          ${m.done && !m.error && !fc ? `<div class="donkey-actions">
             <button class="btn ghost" data-d="side">💬 Keep as side note</button>
             <button class="btn ghost" data-d="note">📝 Add as my note</button>
             <button class="btn ghost" data-d="weave">✍️ Add into the text</button>
@@ -214,7 +252,8 @@ Rules:
     if (mode() === "fallback") html += fallbackBox();
     if (mode() === "local" && helper && !list.length) html += `<p class="donkey-row"><button class="btn ghost" data-d="pair">📱 Use from phone or iPad</button></p>`;
     if (mode() === "relay" && !list.length) html += `<p class="muted donkey-hint">Answered by your Mac, through your own Claude. <button class="btn ghost" data-d="unpair-me">Unpair this device</button></p>`;
-    if (!list.length && mode() !== "fallback") html += `<p class="muted donkey-hint">Ask anything about this lecture: “explain this more simply”, “give me an example”, “add a paragraph on …”, “make 3 exam questions on this section”. I read the slides, the transcript and your notes first.</p>`;
+    if (!list.length && mode() !== "fallback" && fc) html += `<p class="muted donkey-hint">Ask anything about these files: “summarise the main argument”, “what does it say about …?”, “compare the two readings”, “make 5 exam questions from this”. I read the files first.</p>`;
+    else if (!list.length && mode() !== "fallback") html += `<p class="muted donkey-hint">Ask anything about this lecture: “explain this more simply”, “give me an example”, “add a paragraph on …”, “make 3 exam questions on this section”. I read the slides, the transcript and your notes first.</p>`;
     log.innerHTML = html;
     log.scrollTop = log.scrollHeight;
   }
@@ -252,7 +291,7 @@ Rules:
   }
 
   async function ask(question) {
-    const api = A(), path = api.path();
+    const path = chatKey();
     const list = (chats[path] = chats[path] || []);
     const ctx = about ? { ...about } : {};
     list.push({ role: "user", text: question, about: ctx });
@@ -265,7 +304,7 @@ Rules:
     if (mode() === "relay") return askRelay(question, ctx, msg);
     try {
       const r = await fetch(HELPER + "/ask", { method: "POST", signal: abort.signal, headers: { "content-type": "application/json" },
-        body: JSON.stringify({ engine, model: modelFor(engine), system: SYSTEM, prompt: await buildPrompt(question, ctx) }) });
+        body: JSON.stringify({ engine, model: modelFor(engine), system: fileCtx() ? FILE_SYSTEM : SYSTEM, prompt: await buildPrompt(question, ctx) }) });
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `The helper answered ${r.status}`);
       const reader = r.body.getReader(), dec = new TextDecoder();
       let buf = "", last = 0;
@@ -298,7 +337,7 @@ Rules:
     const sig = abort.signal, key = paired.get().k;
     try {
       const eng = pref.get() === "codex" ? "codex" : "claude";
-      const data = await seal(key, JSON.stringify({ engine: eng, model: modelFor(eng), system: SYSTEM, prompt: await buildPrompt(question, ctx) }));
+      const data = await seal(key, JSON.stringify({ engine: eng, model: modelFor(eng), system: fileCtx() ? FILE_SYSTEM : SYSTEM, prompt: await buildPrompt(question, ctx) }));
       const job = await relayCall("POST", "job", { data });
       let from = 0, started = Date.now(), picked = false;
       for (;;) {
@@ -397,8 +436,8 @@ Rules:
   function external(e) {
     const ta = $(".donkey-form textarea"), q = ta.value.trim();
     if (!q) { e.preventDefault(); ta.focus(); ta.placeholder = "Type your question first, then press the button"; return; }
-    const api = A(), path = api.path(), list = (chats[path] = chats[path] || []);
-    const text = buildPrompt(q, about).then(p => SYSTEM + "\n\n" + p);
+    const path = chatKey(), list = (chats[path] = chats[path] || []);
+    const sys = fileCtx() ? FILE_SYSTEM : SYSTEM, text = buildPrompt(q, about).then(p => sys + "\n\n" + p);
     let copied = false;
     try {
       if (window.ClipboardItem && navigator.clipboard?.write)
@@ -419,7 +458,7 @@ Rules:
 
   function lastAnswer(btn) {
     const i = +btn.closest(".donkey-msg").dataset.i;
-    return (chats[A().path()] || [])[i];
+    return (chats[chatKey()] || [])[i];
   }
   function saved(btn, label) { btn.textContent = "✓ " + label; btn.disabled = true; }
 
@@ -430,7 +469,7 @@ Rules:
     switch (b.dataset.d) {
       case "close": return close();
       case "stop": return abort?.abort();
-      case "clear": chats[api.path()] = []; return renderLog();
+      case "clear": chats[chatKey()] = []; return renderLog();
       case "unabout": about = { key: about?.key || api.sectionInView() }; about.quote = null; return renderAbout();
       case "ext": return external(e);
       case "connect-me": return connect(true);
@@ -444,9 +483,10 @@ Rules:
       case "pasted": {
         const t = b.previousElementSibling.value.trim();
         if (!t) return;
-        (chats[api.path()] = chats[api.path()] || []).push({ role: "ai", text: t, about: { ...about }, done: true });
+        (chats[chatKey()] = chats[chatKey()] || []).push({ role: "ai", text: t, about: { ...about }, done: true });
         return renderLog();
       }
+      case "savefile": { const fc = fileCtx(); if (fc?.save) fc.save(lastAnswer(b).text).then(() => saved(b, "Saved to My space"), err => alert("Couldn't save: " + err.message)); return; }
       case "copy": navigator.clipboard?.writeText(lastAnswer(b).text); return saved(b, "Copied");
       case "side": { const m = lastAnswer(b); if (api.addComment(m.about?.quote, m.about?.key || api.sectionInView(), "🫏 " + m.text)) saved(b, "Kept as side note"); return; }
       case "note": { const m = lastAnswer(b); if (api.addNote(m.about?.quote, m.about?.key || api.sectionInView(), m.text)) saved(b, "Added as my note"); return; }
@@ -477,11 +517,17 @@ Rules:
   fab.addEventListener("click", () => (panel.hidden ? open() : close()));
   document.addEventListener("keydown", e => { if (e.key === "Escape" && !panel.hidden) close(); });
 
-  // Show the button on lecture pages only (where annotations are attached).
-  setInterval(() => { const ok = !!A()?.ready(); fab.hidden = !ok; if (!ok && !panel.hidden) close(); }, 700);
+  // Show the button on lecture pages (where annotations are attached) and on library pages that set files.
+  setInterval(() => { const ok = !!fileCtx() || !!A()?.ready(); fab.hidden = !ok; if (!ok && !panel.hidden) close(); }, 700);
   addEventListener("hashchange", () => { about = null; if (!panel.hidden) setTimeout(() => open(), 400); });
 
   if (justPaired) setTimeout(function wait() { A()?.ready() ? open() : setTimeout(wait, 500); }, 500);
 
-  window.Donkey = { open };
+  // space.js: use these files as the context on the current page (null to stop), and optionally open the panel.
+  function useFiles(ctx, show = false) {
+    files = ctx ? { ...ctx, hash: location.hash } : null;
+    if (show && files) open();
+    else if (!panel.hidden && files) { renderAbout(); renderLog(); }
+  }
+  window.Donkey = { open, useFiles };
 })();

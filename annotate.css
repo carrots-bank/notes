@@ -211,3 +211,28 @@ mark.wx-hit { background: var(--hl-yellow); color: inherit; padding: 0 1px; bord
 .sp-form select, .sp-form textarea { font: 15px var(--sans); padding: 9px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-weight: 400; }
 .sp-form textarea { font: 14px/1.5 ui-monospace, Menlo, monospace; resize: vertical; }
 @media (max-width: 600px) { .sp-row { grid-template-columns: 1fr; } .wx-flabel { min-width: 100%; } }
+
+/* Library (space.js showLibrary / showFile / showWorldFile) */
+.sp-actions { flex-wrap: wrap; }
+.sp-actions .btn { padding-left: 8px; padding-right: 8px; white-space: nowrap; }
+.sp-h a { color: inherit; text-decoration: none; }
+.lib-drop { border: 2px dashed var(--border); border-radius: 12px; padding: 22px 16px; text-align: center; display: grid; gap: 8px; justify-items: center; margin: 14px 0 4px; transition: border-color .15s, background .15s; }
+.lib-drop.over { border-color: var(--accent); background: var(--accent-soft); }
+.lib-drop .btn { cursor: pointer; }
+.lib-hint { font-size: 13.5px; margin: 0; }
+.lib-progress { list-style: none; padding: 0; margin: 6px 0; font-size: 14px; }
+.lib-progress li.bad { color: var(--bad); }
+.lib-bar { display: flex; align-items: center; gap: 8px; margin: 14px 0 6px; position: sticky; top: 0; background: var(--surface); padding: 6px 0; z-index: 1; }
+.lib-bar .spacer { flex: 1; }
+.lib ul { list-style: none; padding-left: 14px; margin: 4px 0; }
+.lib li { display: flex; align-items: center; gap: 6px; padding: 3px 0; flex-wrap: wrap; }
+.lib details summary { font-weight: 600; cursor: pointer; padding: 4px 0; }
+.lib details details { margin-left: 14px; }
+.lib-pick input { width: 17px; height: 17px; margin: 0; }
+.lib-sub { font-size: 12.5px; }
+.lib-file h1 { font: 700 24px/1.3 var(--sans); margin: 0 0 4px; overflow-wrap: anywhere; }
+.lib-file > p { font: 14px/1.4 var(--sans); margin: 0 0 6px; }
+.lib-preview { margin-top: 12px; }
+.lib-preview iframe { width: 100%; height: 78vh; border: 1px solid var(--border); border-radius: 8px; background: #fff; }
+.lib-preview img { max-width: 100%; border-radius: 8px; }
+.lib-text { white-space: pre-wrap; font: 13.5px/1.5 ui-monospace, Menlo, monospace; background: var(--code); padding: 12px; border-radius: 8px; max-height: 78vh; overflow: auto; }

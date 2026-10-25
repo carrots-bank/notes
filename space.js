@@ -3,14 +3,18 @@
 // My space (private to each person, encrypted with their personal key through annotate.js `records`):
 //   space:index            {v:1, items:{id: item}}; items merge by `updated` across devices
 //                          note     {kind:"note", title, branch, topic, date, world?:{id}}   (made by the note maker)
-//                          bookmark {kind:"bookmark", ref:"#/doc/…" | "#/world/<id>", title}
+//                          bookmark {kind:"bookmark", ref:"#/doc/…" | "#/world/<id>", title, file?}
+//                          file     {kind:"file", title, name, mime, size, chunks, chars, uni, branch, topic, type, world?:{id}}
 //                          deleted items stay as tombstones {id, deleted:true, updated}
 //   space:note:<id>        {md, transcript, slides, meta}
 //   space:asset:<id>:<p>   {type, b64}   one image per record (p = "assets/slide-001.jpg")
+//   space:file:<id>:<n>    {b64}         a library file, in chunks of CHUNK bytes
+//   space:filetext:<id>    {text, cut}   its text (read in the browser when it was added), for the 🫏
 // Library courses listed in the person's bundle (`m`) also appear in My space.
 //
 // World (everyone with a password; encrypted with the site-wide world key `w`; worker /v1/world/*):
 //   approved community notes + the shared library. People submit their own notes; the admin reviews them.
+//   Files shared to the Global library are world items with meta.kind "file", body {text} and blobs "file/<n>" {b64}.
 (() => {
   const HELPER = "http://127.0.0.1:47321";
   const te = new TextEncoder(), td = new TextDecoder();
@@ -95,10 +99,11 @@
     const M = V().manifest(), out = [];
     for (const c of M.tree.filter(c => !c.restricted)) for (const m of c.modules) for (const l of m.lectures)
       out.push({ key: "lib:" + l.path, ref: "#/doc/" + V().enc(l.path + "/notes.md"), title: l.title, date: l.date, uni: c.uni || c.name,
-        subject: c.name, topic: m.name, summary: l.summary || "", type: "Lecture notes", source: "Library" });
+        subject: c.name, topic: m.name, summary: l.summary || "", type: "Lecture notes", source: "Library", kind: "Notes" });
     for (const w of worldItems.filter(x => x.status === "approved"))
       out.push({ key: "w:" + w.id, ref: `#/world/${w.id}`, title: w.title, date: w.date, uni: w.uni || UNSET_UNI, subject: w.branch || "Unsorted",
-        topic: w.topic || "General", summary: w.summary || "", type: w.type || "Lecture notes", source: "Community", by: w.by });
+        topic: w.topic || "General", summary: w.summary || "", type: w.type || (w.kind === "file" ? "Other" : "Lecture notes"), source: "Community", by: w.by,
+        kind: w.kind === "file" ? "Files" : "Notes", file: w.kind === "file" ? { name: w.name, size: w.size } : null });
     return out;
   }
   // Recently opened pages (this device), for "Recently viewed" and recommendations.
@@ -192,10 +197,12 @@
     const own = live().filter(it => it.kind === "note" && it.uni !== FINANCE);
     const marks = live().filter(it => it.kind === "bookmark");
     const courses = M.tree.filter(c => mine.includes(c.name));
-    let h = enabled() ? `<div class="sp-actions"><a class="btn primary" href="#/new">＋ New notes</a><a class="btn" href="#/write">＋ Write</a></div>` : "";
+    const files = live().filter(it => it.kind === "file");
+    let h = enabled() ? `<div class="sp-actions"><a class="btn primary" href="#/new">＋ New notes</a><a class="btn" href="#/write">＋ Write</a><a class="btn" href="#/library">📚 Library</a></div>` : "";
     if (!enabled()) h += `<p class="muted sp-hint">Press <strong>Lock</strong> and sign in again to switch on your own space.</p>`;
     if (own.length) h += `<h3 class="sp-h">My notes</h3>` + tree(own, [["uni", UNSET_UNI], ["branch", "Unsorted"], ["topic", "General"]], it => li(`#/space/${it.id}`, it, badge(it)));
     else if (enabled() && indexLoaded) h += `<p class="muted sp-hint">Your own notes and material will appear here. Make notes from a recording and slides, or write your own.</p>`;
+    if (files.length) h += `<h3 class="sp-h"><a href="#/library">My library</a></h3>` + tree(files, [["uni", UNSET_UNI], ["branch", "Unsorted"], ["topic", "General"]], it => li(`#/file/${it.id}`, { ...it, title: "📄 " + it.title }, badge(it)));
     if (marks.length) h += `<h3 class="sp-h">Saved</h3><ul class="sp-list">${marks.sort((a, b) => b.updated - a.updated).map(m =>
       `<li><a href="${esc(m.ref)}">${esc(m.title)}</a><button class="icon sp-x" data-unsave="${esc(m.id)}" title="Remove from My space">✕</button></li>`).join("")}</ul>`;
     const rec = recent().filter(r => !marks.some(m => m.ref === r.ref)).slice(0, 6);
@@ -246,12 +253,12 @@
 
   function worldHTML() {
     const pending = worldItems.filter(x => x.status === "pending");
-    let h = `<a class="btn primary sp-explore" href="#/world">🔎 Search the World</a>`;
+    let h = `<div class="sp-actions"><a class="btn primary" href="#/world">🔎 Search the World</a><a class="btn" href="#/world?kind=Files">📚 Global library</a></div>`;
     if (worldAdmin && pending.length) h += `<a class="btn sp-review" href="#/review">Review queue <span class="sp-count">${pending.length}</span></a>`;
     h += `<input class="sp-search" type="search" placeholder="Filter this list…" value="${esc(ls.get("space_q", ""))}">`;
     const entries = catalog();
     h += `<h3 class="sp-h">By university</h3>` + tree(entries, [["uni", UNSET_UNI], ["subject", "Unsorted"], ["topic", "General"]],
-      e => li(e.ref, e, e.source === "Community" ? `<span class="sp-badge">community</span>` : ""));
+      e => li(e.ref, e.file ? { ...e, title: "📄 " + e.title } : e, e.source === "Community" ? `<span class="sp-badge">${e.file ? "file" : "community"}</span>` : ""));
     if (!enabled()) h += `<p class="muted sp-hint">Press <strong>Lock</strong> and sign in again to see community notes.</p>`;
     return h;
   }
@@ -284,7 +291,10 @@
   // ---------- pages ----------
   function route(h) {
     let m;
+    window.Donkey?.useFiles(null);
     if ((m = h.match(/^\/space\/([0-9a-f]{24})$/))) return showOwn(m[1]), true;
+    if ((m = h.match(/^\/file\/([0-9a-f]{24})$/))) return showFile(m[1]), true;
+    if (h === "/library") return showLibrary(), true;
     if ((m = h.match(/^\/world\/([0-9a-f]{32})$/))) return showWorld(m[1]), true;
     if (h === "/review") return showReview(), true;
     if (h === "/new") return showNew(), true;
@@ -420,6 +430,7 @@
     let row, meta, body;
     try { row = await wcall("GET", `item/${wid}`); meta = await wopen(row.meta); body = await wopen(row.body); }
     catch (e) { return page(`<section class="panel"><p>Couldn't open this note: ${esc(e.message)}</p></section>`); }
+    if (meta.kind === "file") return showWorldFile(wid, row, meta, body);
     const saved = live().find(it => it.kind === "bookmark" && it.ref === `#/world/${wid}`);
     if (row.status === "approved") recordVisit(`#/world/${wid}`, meta.title);
     const bar = `<span class="sp-crumb">World › ${esc(meta.branch || "Unsorted")} › ${esc(meta.topic || "General")}${meta.by ? ` · by ${esc(meta.by)}` : ""}</span><span class="spacer"></span>
@@ -451,9 +462,9 @@
     rerender();
     const rows = worldItems.filter(x => x.status !== "draft").sort((a, b) => (a.status === "pending" ? -1 : 1) - (b.status === "pending" ? -1 : 1) || b.updated - a.updated);
     page(`<section class="panel sp-review-page"><h1>Review queue</h1>
-      <p class="muted">Open a submission to read it, then approve or reject it. Approved notes appear in everyone's World tab.</p>
-      ${rows.length ? `<table><thead><tr><th>Notes</th><th>Where</th><th>Status</th></tr></thead><tbody>${rows.map(r =>
-        `<tr><td><a href="#/world/${r.id}">${esc(r.title)}</a>${r.by ? ` <span class="muted">by ${esc(r.by)}</span>` : ""}</td><td>${esc(r.branch)} › ${esc(r.topic)}</td><td><span class="sp-badge ${r.status}">${esc(r.status)}</span></td></tr>`).join("")}</tbody></table>` : `<p>Nothing to review yet.</p>`}</section>`);
+      <p class="muted">Open a submission to read it, then approve or reject it. Approved notes and files appear in everyone's World tab (files in the Global library).</p>
+      ${rows.length ? `<table><thead><tr><th>Item</th><th>Where</th><th>Status</th></tr></thead><tbody>${rows.map(r =>
+        `<tr><td>${r.kind === "file" ? "📄 " : ""}<a href="#/world/${r.id}">${esc(r.title)}</a>${r.by ? ` <span class="muted">by ${esc(r.by)}</span>` : ""}</td><td>${esc(r.branch)} › ${esc(r.topic)}</td><td><span class="sp-badge ${r.status}">${esc(r.status)}</span></td></tr>`).join("")}</tbody></table>` : `<p>Nothing to review yet.</p>`}</section>`);
   }
 
   // ---------- making new notes (on this laptop, through the helper) ----------
@@ -536,10 +547,278 @@
     });
   }
 
+  // ---------- library: files kept in My space (and shared to the Global library), readable by the 🫏 ----------
+  const CHUNK = 900 * 1024, MAX_FILE = 30 * 1024 * 1024, TEXT_BYTES = 900 * 1024;
+  const FILE_TYPES = ["Reading", "Article", "Book chapter", "Slides", "Past paper", "Handout", "Data", "Other"];
+  const PDFJS = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/", JSZIP = "https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js";
+  const fmtSize = n => n > 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(n / 1024)) + " KB";
+  const fmtFile = f => `${(f.name?.match(/\.([^.]+)$/)?.[1] || "file").toUpperCase()}${f.size ? " · " + fmtSize(f.size) : ""}`;
+  const extOf = name => (String(name).match(/\.([^.]+)$/)?.[1] || "").toLowerCase();
+  const MIME = { pdf: "application/pdf", txt: "text/plain", md: "text/markdown", csv: "text/csv", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp",
+    docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" };
+  function loadScript(src) {
+    return new Promise((ok, no) => {
+      if (document.querySelector(`script[src="${src}"]`)?.dataset.loaded) return ok();
+      const s = document.createElement("script");
+      s.src = src; s.onload = () => { s.dataset.loaded = 1; ok(); }; s.onerror = () => no(new Error("couldn't load a reader"));
+      document.head.append(s);
+    });
+  }
+  // The text the 🫏 reads: from PDFs (page by page), Word, PowerPoint (slide by slide), Excel and plain-text files.
+  async function extractText(name, bytes) {
+    const ext = extOf(name);
+    if (ext === "pdf") {
+      await loadScript(PDFJS + "pdf.min.js");
+      pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS + "pdf.worker.min.js";
+      const pdf = await pdfjsLib.getDocument({ data: bytes.slice() }).promise, out = [];
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const c = await (await pdf.getPage(i)).getTextContent();
+        out.push(`[Page ${i}]\n` + c.items.map(t => t.str + (t.hasEOL ? "\n" : " ")).join("").replace(/[ \t]+/g, " ").trim());
+      }
+      return out.join("\n\n");
+    }
+    if (["docx", "pptx", "xlsx"].includes(ext)) {
+      await loadScript(JSZIP);
+      const zip = await JSZip.loadAsync(bytes);
+      const xml = async p => new DOMParser().parseFromString(await zip.file(p).async("string"), "application/xml");
+      const paras = (d, p, t) => [...d.getElementsByTagName(p)].map(x => [...x.getElementsByTagName(t)].map(n => n.textContent).join("")).filter(Boolean).join("\n");
+      const num = n => +n.match(/(\d+)\.xml$/)[1];
+      if (ext === "docx") return paras(await xml("word/document.xml"), "w:p", "w:t");
+      if (ext === "pptx") {
+        const slides = Object.keys(zip.files).filter(n => /^ppt\/slides\/slide\d+\.xml$/.test(n)).sort((a, b) => num(a) - num(b));
+        return (await Promise.all(slides.map(async (n, i) => `[Slide ${i + 1}]\n` + paras(await xml(n), "a:p", "a:t")))).join("\n\n");
+      }
+      const shared = zip.file("xl/sharedStrings.xml") ? [...(await xml("xl/sharedStrings.xml")).getElementsByTagName("si")].map(n => n.textContent) : [];
+      const sheets = Object.keys(zip.files).filter(n => /^xl\/worksheets\/sheet\d+\.xml$/.test(n)).sort((a, b) => num(a) - num(b));
+      return (await Promise.all(sheets.map(async (n, i) => `[Sheet ${i + 1}]\n` + [...(await xml(n)).getElementsByTagName("row")].map(r =>
+        [...r.getElementsByTagName("c")].map(c => { const v = c.getElementsByTagName("v")[0]?.textContent ?? c.textContent; return c.getAttribute("t") === "s" ? shared[+v] ?? "" : v; }).join("\t")).join("\n")))).join("\n\n");
+    }
+    if (["txt", "md", "markdown", "csv", "tsv", "json", "tex", "bib", "rtf", "html", "htm", "xml"].includes(ext)) {
+      const t = td.decode(bytes);
+      return ext.startsWith("htm") ? new DOMParser().parseFromString(t, "text/html").body.textContent : t;
+    }
+    return "";
+  }
+  function capText(text) {  // keep the stored text under TEXT_BYTES (one record)
+    if (te.encode(text).length <= TEXT_BYTES) return { text, cut: false };
+    let lo = 0, hi = text.length;
+    while (lo < hi) { const mid = (lo + hi + 1) >> 1; te.encode(text.slice(0, mid)).length <= TEXT_BYTES ? (lo = mid) : (hi = mid - 1); }
+    return { text: text.slice(0, lo), cut: true };
+  }
+  const clean = t => String(t || "").replace(/\[(Page|Slide|Sheet) \d+\]/g, " ").replace(/\s+/g, " ").trim();
+  const summaryText = (t, limit = 420) => { t = clean(t); return t.length > limit ? t.slice(0, limit).replace(/\s\S*$/, "") + "…" : t; };
+
+  async function addFile(file, meta, say) {
+    if (file.size > MAX_FILE) throw new Error(`${file.name} is over ${fmtSize(MAX_FILE)}`);
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    say("reading the text…");
+    let text = "";
+    try { text = (await extractText(file.name, bytes)).trim(); } catch (e) { console.warn("text", file.name, e); }
+    const kept = capText(text), id = newId(), chunks = Math.max(1, Math.ceil(bytes.length / CHUNK));
+    for (let i = 0; i < chunks; i++) {
+      say(chunks > 1 ? `uploading ${i + 1}/${chunks}…` : "uploading…");
+      await R().put(`space:file:${id}:${i}`, { b64: b64e(bytes.subarray(i * CHUNK, (i + 1) * CHUNK)) }, 0);
+    }
+    await R().put(`space:filetext:${id}`, kept, 0);
+    const it = { id, kind: "file", title: file.name.replace(/\.[^.]+$/, ""), name: file.name, mime: file.type || MIME[extOf(file.name)] || "application/octet-stream",
+      size: bytes.length, chunks, chars: kept.text.length, date: new Date().toISOString().slice(0, 10), created: now(), ...meta };
+    await saveItems(it);
+    return it;
+  }
+  async function ownFileBlob(it) {
+    const parts = await Promise.all(Array.from({ length: it.chunks }, async (_, i) => b64d((await R().get(`space:file:${it.id}:${i}`)).value.b64)));
+    return new Blob(parts, { type: it.mime });
+  }
+  async function worldFileBlob(wid, meta) {
+    const parts = await Promise.all(Array.from({ length: meta.chunks }, async (_, i) => b64d((await wopen((await wcall("GET", `item/${wid}/blob/file%2F${i}`)).data)).b64)));
+    return new Blob(parts, { type: meta.mime });
+  }
+  const ownFileText = async id => (await R().get(`space:filetext:${id}`)).value?.text || "";
+  const worldFileText = async wid => (await wopen((await wcall("GET", `item/${wid}`)).body)).text || "";
+  function saveBlob(blob, name) {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = String(name).replace(/[\\/:*?"<>|]/g, "-");
+    a.click();
+  }
+  async function createNote(meta, md) {
+    const id = newId();
+    meta = { date: new Date().toISOString().slice(0, 10), ...meta };
+    if (!/^#\s/m.test(md)) md = `# ${meta.title}\n\n` + md;
+    await R().put("space:note:" + id, { v: 1, md, transcript: "", slides: [], meta }, 0);
+    await saveItems({ id, kind: "note", ...meta, created: now() });
+    return id;
+  }
+  // 🫏 answers about files can be kept as a note next to them.
+  const donkeySave = (title, where) => md => createNote({ title: "🫏 " + title, uni: where.uni || "", branch: where.branch || "", topic: where.topic || "", type: "Reading notes" }, md);
+  function preview(el, blob, mime, text) {
+    const box = el.querySelector(".lib-preview");
+    if (/^image\//.test(mime)) box.innerHTML = `<img alt="" src="${URL.createObjectURL(blob)}">`;
+    else if (mime === "application/pdf") box.innerHTML = `<iframe title="File" src="${URL.createObjectURL(blob)}"></iframe>`;
+    else box.innerHTML = text ? `<pre class="lib-text">${esc(text.length > 200000 ? text.slice(0, 200000) + "\n…" : text)}</pre>` : `<p class="muted">No preview for this kind of file. Download it to open it.</p>`;
+  }
+  const textNote = (chars, cut) => chars ? `The 🫏 can read ${chars.toLocaleString()} characters of text from this file${cut ? " (it was long, so only the first part)" : ""}.`
+    : "No text could be read from this file (for example a scan or an image), so the 🫏 can't answer from it.";
+
+  function showLibrary() {
+    if (!enabled()) return page(`<section class="panel"><p>Press <strong>Lock</strong> and sign in again to use your library.</p></section>`);
+    const files = live().filter(it => it.kind === "file");
+    const saved = live().filter(it => it.kind === "bookmark" && it.file);
+    const own = live().filter(it => it.kind === "note" || it.kind === "file");
+    const list = (id, vals) => `<datalist id="${id}">${[...new Set(vals.filter(Boolean))].sort().map(v => `<option value="${esc(v)}">`).join("")}</datalist>`;
+    const row = it => `<li><label class="lib-pick"><input type="checkbox" value="own:${it.id}"></label><a href="#/file/${it.id}">📄 ${esc(it.title)}</a>
+      <span class="muted lib-sub">${esc(fmtFile(it))}${it.chars ? "" : " · no text"}</span>${badge(it)}</li>`;
+    const el = page(`<section class="panel sp-new-page lib"><h1>📚 My library</h1>
+      <p>Keep useful files here: readings, articles, past papers, handouts, slides. They're stored encrypted in your own space. Tick some and press <strong>🫏 Ask about these</strong> to ask questions about them, or open one and press 🫏. You can share a file to the <a href="#/world?kind=Files">Global library</a> (the admin approves it first).</p>
+      <div class="lib-drop" tabindex="0"><strong>Drop files here</strong> or <label class="btn">Choose files<input type="file" multiple hidden></label>
+        <div class="muted">PDF, Word, PowerPoint, Excel, text and images · up to ${fmtSize(MAX_FILE)} each</div></div>
+      <form class="sp-form lib-where">
+        <div class="sp-row"><label>University <input name="uni" list="l-unis" value="${esc(ls.get("space_uni", ""))}" placeholder="e.g. University of Cambridge"></label>
+          <label>Type <select name="type">${FILE_TYPES.map(t => `<option${t === ls.get("lib_type", "") ? " selected" : ""}>${t}</option>`).join("")}</select></label></div>
+        <div class="sp-row"><label>Subject <input name="branch" list="l-br" value="${esc(ls.get("space_branch", ""))}" placeholder="e.g. Land Economy IB"></label>
+          <label>Topic <input name="topic" list="l-tp" value="${esc(ls.get("space_topic", ""))}" placeholder="e.g. P10 The Built Environment"></label></div>
+        ${list("l-unis", unis())}${list("l-br", own.map(i => i.branch))}${list("l-tp", own.map(i => i.topic))}
+        <p class="muted lib-hint">New files are filed under these folders (you can move them later).</p>
+      </form>
+      <ul class="lib-progress"></ul>
+      <div class="lib-bar"><button class="btn primary" data-lib="ask" disabled>🫏 Ask about these</button><span class="muted" data-lib="count"></span><span class="spacer"></span>
+        ${files.length + saved.length ? `<button class="btn ghost" data-lib="all">Select all</button>` : ""}</div>
+      ${files.length ? tree(files, [["uni", UNSET_UNI], ["branch", "Unsorted"], ["topic", "General"]], row).replace(/<details>/g, "<details open>") : `<p class="muted">No files yet.</p>`}
+      ${saved.length ? `<h3 class="sp-h">Saved from the Global library</h3><ul>${saved.map(b => `<li><label class="lib-pick"><input type="checkbox" value="${esc(b.ref)}"></label><a href="${esc(b.ref)}">📄 ${esc(b.title)}</a></li>`).join("")}</ul>` : ""}
+    </section>`);
+    const where = () => { const f = new FormData(el.querySelector(".lib-where")), g = k => String(f.get(k) || "").trim(); return { uni: g("uni"), branch: g("branch"), topic: g("topic"), type: g("type") }; };
+    const prog = el.querySelector(".lib-progress");
+    async function upload(fileList) {
+      const w = where();
+      ls.set("space_uni", w.uni); ls.set("space_branch", w.branch); ls.set("space_topic", w.topic); ls.set("lib_type", w.type);
+      for (const file of fileList) {
+        const li = document.createElement("li");
+        li.textContent = `${file.name}: waiting…`;
+        prog.append(li);
+        const say = t => (li.textContent = `${file.name}: ${t}`);
+        try { const it = await addFile(file, w, say); li.innerHTML = `✓ <a href="#/file/${it.id}">${esc(file.name)}</a> <span class="muted">${it.chars ? "" : "(no text found)"}</span>`; }
+        catch (e) { li.classList.add("bad"); say("couldn't add: " + e.message); }
+      }
+      if (location.hash === "#/library") setTimeout(() => location.hash === "#/library" && showLibrary(), 1500);
+    }
+    const drop = el.querySelector(".lib-drop");
+    el.querySelector(".lib-drop input[type=file]").addEventListener("change", e => upload([...e.target.files]));
+    for (const ev of ["dragenter", "dragover"]) el.addEventListener(ev, e => { if (e.dataTransfer?.types?.includes("Files")) { e.preventDefault(); drop.classList.add("over"); } });
+    el.addEventListener("dragleave", e => { if (!el.contains(e.relatedTarget)) drop.classList.remove("over"); });
+    el.addEventListener("drop", e => { e.preventDefault(); drop.classList.remove("over"); if (e.dataTransfer.files.length) upload([...e.dataTransfer.files]); });
+    const picked = () => [...el.querySelectorAll(".lib-pick input:checked")].map(x => x.value);
+    const sync = () => { const n = picked().length; el.querySelector("[data-lib=ask]").disabled = !n; el.querySelector("[data-lib=count]").textContent = n ? `${n} selected` : "Tick files to ask about them"; };
+    el.addEventListener("change", e => { if (e.target.closest(".lib-pick")) sync(); });
+    sync();
+    el.addEventListener("click", e => {
+      const a = e.target.closest("[data-lib]")?.dataset.lib;
+      if (a === "all") { el.querySelectorAll(".lib-pick input").forEach(x => (x.checked = true)); sync(); }
+      if (a !== "ask") return;
+      const keys = picked(), names = keys.map(k => k.startsWith("own:") ? index.items[k.slice(4)]?.title : live().find(b => b.ref === k)?.title);
+      const first = index.items[keys.find(k => k.startsWith("own:"))?.slice(4)] || {};
+      window.Donkey?.useFiles({ key: "lib:" + keys.join(","), title: names.length === 1 ? names[0] : `${names.length} files: ${names.join(", ")}`,
+        files: () => Promise.all(keys.map(async (k, i) => ({ name: names[i], text: k.startsWith("own:") ? await ownFileText(k.slice(4)) : await worldFileText(k.slice(8)) }))),
+        save: donkeySave(names.length === 1 ? names[0] : "Library question", first) }, true);
+    });
+  }
+
+  async function showFile(id) {
+    loading();
+    if (!(await R()?.ready())) return page(`<section class="panel"><p>Sign in again to open your library.</p></section>`);
+    await loadedP;
+    if (!index.items[id]) await refresh();
+    const it = index.items[id];
+    if (!it || it.deleted || it.kind !== "file") return page(`<section class="panel"><p>This file isn't in your library any more.</p></section>`);
+    const w = it.world && worldItems.find(x => x.id === it.world.id);
+    const el = page(`<div class="sp-bar"><span class="sp-crumb"><a href="#/library">My library</a> › ${esc(it.branch || "Unsorted")} › ${esc(it.topic || "General")}</span><span class="spacer"></span>
+        ${w ? `<span class="sp-badge ${w.status}">${{ pending: "In review", approved: "In the Global library", rejected: "Not accepted" }[w.status] || w.status}</span>` : ""}
+        <button class="btn primary" data-f="ask">🫏 Ask about it</button>
+        ${!w || w.status === "rejected" ? `<button class="btn" data-f="share">Share to the Global library</button>` : ""}
+        <button class="btn ghost" data-f="download">⬇ Download</button><button class="btn ghost" data-f="move">Move</button><button class="btn ghost" data-f="delete">Delete</button></div>
+      <section class="panel lib-file"><h1>📄 ${esc(it.title)}</h1><p class="muted">${esc(fmtFile(it))} · ${esc(it.type || "Other")} · added ${esc(it.date || "")}</p>
+        <p class="muted lib-hint">${esc(textNote(it.chars))}</p><div class="lib-preview"><p class="muted">Loading…</p></div></section>`);
+    const ctx = { key: "file:" + id, title: it.title, files: async () => [{ name: it.name, text: await ownFileText(id) }], save: donkeySave(it.title, it) };
+    window.Donkey?.useFiles(ctx);
+    let blob = null;
+    Promise.all([ownFileBlob(it), it.mime.startsWith("text/") || /officedocument/.test(it.mime) ? ownFileText(id) : ""])
+      .then(([b, t]) => { blob = b; if (location.hash === "#/file/" + id) preview(el, b, it.mime, t); })
+      .catch(e => { el.querySelector(".lib-preview").innerHTML = `<p class="muted">Couldn't load the file: ${esc(e.message)}</p>`; });
+    el.querySelector(".sp-bar").addEventListener("click", async e => {
+      const a = e.target.closest("[data-f]")?.dataset.f;
+      if (a === "ask") window.Donkey?.useFiles(ctx, true);
+      if (a === "download") saveBlob(blob || await ownFileBlob(it), it.name);
+      if (a === "move") { await moveNote(it); showFile(id); }
+      if (a === "share") shareFileToWorld(it);
+      if (a === "delete") {
+        if (!confirm(`Delete "${it.title}" from your library? This can't be undone.`)) return;
+        await saveItems({ id, deleted: true });
+        for (let i = 0; i < it.chunks; i++) R().put(`space:file:${id}:${i}`, { deleted: true }).catch(() => {});
+        R().put(`space:filetext:${id}`, { deleted: true }).catch(() => {});
+        location.hash = "#/library";
+      }
+    });
+  }
+
+  async function shareFileToWorld(it) {
+    if (!WKEY) return alert("Sign in again to share files.");
+    const by = prompt(worldAdmin ? "Publish to the Global library. Show it as shared by (optional):" :
+      "Send this file to the admin for review. Once approved, everyone on the site can find it in the Global library.\n\nShow it as shared by (optional):", "");
+    if (by === null) return;
+    const bar = V().main.querySelector(".sp-bar");
+    const say = t => { bar.querySelector(".sp-progress")?.remove(); bar.insertAdjacentHTML("beforeend", `<span class="sp-progress muted">${esc(t)}</span>`); };
+    try {
+      say("Preparing…");
+      const text = await ownFileText(it.id);
+      const meta = { kind: "file", title: it.title, uni: it.uni || "", branch: it.branch || "", topic: it.topic || "", date: it.date || "", type: it.type || "Other",
+        summary: summaryText(text), by: by.trim(), name: it.name, mime: it.mime, size: it.size, chunks: it.chunks, chars: it.chars };
+      const { id: wid } = await wcall("POST", "item", { meta: await wseal(meta), body: await wseal({ text }) });
+      for (let i = 0; i < it.chunks; i++) {
+        say(`Uploading ${i + 1}/${it.chunks}…`);
+        await wcall("PUT", `item/${wid}/blob/file%2F${i}`, { data: await wseal((await R().get(`space:file:${it.id}:${i}`)).value) });
+      }
+      const r = await wcall("POST", `item/${wid}/submit`);
+      await saveItems({ ...it, world: { id: wid } });
+      await loadWorld();
+      say(r.status === "approved" ? "Published to the Global library." : "Sent for review.");
+      showFile(it.id);
+    } catch (e) { say("Couldn't share: " + e.message); }
+  }
+
+  function showWorldFile(wid, row, meta, body) {
+    const saved = live().find(it => it.kind === "bookmark" && it.ref === `#/world/${wid}`);
+    if (row.status === "approved") recordVisit(`#/world/${wid}`, meta.title);
+    const el = page(`<div class="sp-bar"><span class="sp-crumb"><a href="#/world?kind=Files">Global library</a> › ${esc(meta.branch || "Unsorted")} › ${esc(meta.topic || "General")}${meta.by ? ` · shared by ${esc(meta.by)}` : ""}</span><span class="spacer"></span>
+        ${row.status !== "approved" ? `<span class="sp-badge ${row.status}">${esc(row.status)}</span>` : ""}
+        ${worldAdmin && row.status === "pending" ? `<button class="btn primary" data-w="approve">Approve</button><button class="btn" data-w="reject">Reject</button>` : ""}
+        ${worldAdmin && row.status === "approved" ? `<button class="btn ghost" data-w="unpublish">Unpublish</button>` : ""}
+        ${worldAdmin ? `<button class="btn ghost" data-w="delete">Delete</button>` : ""}
+        <button class="btn primary" data-w="ask">🫏 Ask about it</button><button class="btn ghost" data-w="download">⬇ Download</button>
+        ${row.status === "approved" ? `<button class="btn ${saved ? "" : "ghost"}" data-w="save">${saved ? "★ In My library" : "☆ Save to My library"}</button>` : ""}</div>
+      <section class="panel lib-file"><h1>📄 ${esc(meta.title)}</h1><p class="muted">${esc(fmtFile(meta))} · ${esc(meta.type || "Other")}${meta.uni ? ` · ${esc(meta.uni)}` : ""}</p>
+        <p class="muted lib-hint">${esc(textNote(meta.chars ?? (body.text || "").length))}</p><div class="lib-preview"><p class="muted">Loading…</p></div></section>`);
+    const ctx = { key: "world:" + wid, title: meta.title, files: async () => [{ name: meta.name, text: body.text || "" }], save: donkeySave(meta.title, meta) };
+    window.Donkey?.useFiles(ctx);
+    let blob = null;
+    worldFileBlob(wid, meta).then(b => { blob = b; if (location.hash === "#/world/" + wid) preview(el, b, meta.mime, body.text); })
+      .catch(e => { el.querySelector(".lib-preview").innerHTML = `<p class="muted">Couldn't load the file: ${esc(e.message)}</p>`; });
+    el.querySelector(".sp-bar").addEventListener("click", async e => {
+      const a = e.target.closest("[data-w]")?.dataset.w;
+      if (!a) return;
+      if (a === "ask") return window.Donkey?.useFiles(ctx, true);
+      if (a === "download") return saveBlob(blob || await worldFileBlob(wid, meta), meta.name);
+      if (a === "save") { saved ? await saveItems({ ...saved, deleted: true }) : await saveItems({ id: "bm:" + wid, kind: "bookmark", ref: `#/world/${wid}`, title: meta.title, file: true }); return showWorld(wid); }
+      if (a === "delete" && !confirm("Delete this file from the Global library for everyone?")) return;
+      if (a === "delete") { await wcall("DELETE", `item/${wid}`); await loadWorld(); rerender(); location.hash = "#/review"; return; }
+      await wcall("POST", `item/${wid}/review`, { action: a });
+      await loadWorld(); rerender(); showWorld(wid);
+    });
+  }
+
   // ---------- the World screen: search, filters, recommendations ----------
   function showExplore(params) {
     const all = catalog();
-    const q = params.get("q") || "", f = { uni: params.get("uni") || "", subject: params.get("subject") || "", topic: params.get("topic") || "", type: params.get("type") || "" };
+    const q = params.get("q") || "", f = { kind: params.get("kind") || "", uni: params.get("uni") || "", subject: params.get("subject") || "", topic: params.get("topic") || "", type: params.get("type") || "" };
     const link = patch => { const p = new URLSearchParams({ q, ...f, ...patch }); for (const [k, v] of [...p]) if (!v) p.delete(k); const s = p.toString(); return "#/world" + (s ? "?" + s : ""); };
     let results = searchCatalog(all, q).filter(r => Object.entries(f).every(([k, v]) => !v || r.e[k] === v));
     if (!q) results.sort((a, b) => (b.e.date || "").localeCompare(a.e.date || ""));
@@ -556,12 +835,13 @@
       const snippet = highlight(e.summary, q);
       return `<article class="wx-card"><div class="wx-meta">${esc(e.uni)} › ${esc(e.subject)} › ${esc(e.topic)}${e.date ? ` · ${esc(e.date)}` : ""}</div>
         <h3><a href="${e.ref}">${highlight(e.title, q)}</a></h3>${snippet ? `<p>${snippet}</p>` : ""}
-        <div class="wx-foot"><span class="sp-badge ${e.source === "Community" ? "" : "lib"}">${esc(e.source === "Community" ? e.type : "Library")}</span>${e.by ? `<span class="muted">by ${esc(e.by)}</span>` : ""}
-        <span class="spacer"></span><button class="btn ghost" data-wx-save="${esc(e.ref)}" data-title="${esc(e.title)}">${saved ? "★ Saved" : "☆ Save"}</button></div></article>`;
+        <div class="wx-foot"><span class="sp-badge ${e.source === "Community" ? "" : "lib"}">${esc(e.source === "Community" ? e.type : "Library")}</span>${e.file ? `<span class="muted">📄 ${esc(fmtFile(e.file))}</span>` : ""}${e.by ? `<span class="muted">by ${esc(e.by)}</span>` : ""}
+        <span class="spacer"></span><button class="btn ghost" data-wx-save="${esc(e.ref)}" data-title="${esc(e.title)}"${e.file ? " data-file" : ""}>${saved ? "★ Saved" : "☆ Save"}</button></div></article>`;
     };
     const filtered = q || Object.values(f).some(Boolean);
     let body = "";
-    if (filtered) body = `<p class="muted wx-count">${results.length} result${results.length === 1 ? "" : "s"}</p>` + (results.length ? results.slice(0, 60).map(card).join("") : `<p>Nothing found. Try fewer words or remove a filter.</p>`);
+    if (f.kind === "Files") body += `<h2 class="wx-h">📚 Global library</h2><p class="muted">Readings, articles, past papers and other files people have shared. The admin approves each one before it appears here. Add your own in <a href="#/library">My library</a>, then press <em>Share to the Global library</em>.</p>`;
+    if (filtered) body += `<p class="muted wx-count">${results.length} result${results.length === 1 ? "" : "s"}</p>` + (results.length ? results.slice(0, 60).map(card).join("") : `<p>Nothing found. Try fewer words or remove a filter.</p>`);
     else {
       const rec = recommend(all);
       body += rec.items.length ? `<h2 class="wx-h">Recommended for you</h2><p class="muted">Based on what you've saved, made and read recently.</p>${rec.items.map(card).join("")}`
@@ -572,7 +852,7 @@
       body += `<h2 class="wx-h">Browse by university</h2><div class="wx-unis">${Object.keys(byUni).sort().map(u => `<a class="wx-uni" href="${link({ uni: u })}"><strong>${esc(u)}</strong><span>${[...byUni[u]].sort().map(esc).join(" · ")}</span></a>`).join("")}</div>`;
     }
     const el = page(`<section class="wx"><form class="wx-search"><input name="q" type="search" value="${esc(q)}" placeholder="Search notes, lectures and material in the World…" autocomplete="off"><button class="btn primary">Search</button></form>
-      <div class="wx-facets">${facet("uni", "University")}${facet("subject", "Subject")}${facet("topic", "Topic")}${facet("type", "Type")}</div>
+      <div class="wx-facets">${facet("kind", "Kind")}${facet("uni", "University")}${facet("subject", "Subject")}${facet("topic", "Topic")}${facet("type", "Type")}</div>
       <div class="wx-results">${body}</div></section>`);
     const input = el.querySelector("input[name=q]");
     if (!q) input.focus();
@@ -580,7 +860,7 @@
     el.addEventListener("click", async e => {
       const b = e.target.closest("[data-wx-save]"); if (!b) return;
       const ref = b.dataset.wxSave, it = live().find(x => x.kind === "bookmark" && x.ref === ref);
-      it ? await saveItems({ ...it, deleted: true }) : await saveItems({ id: "bm:" + ref, kind: "bookmark", ref, title: b.dataset.title });
+      it ? await saveItems({ ...it, deleted: true }) : await saveItems({ id: "bm:" + ref, kind: "bookmark", ref, title: b.dataset.title, file: "file" in b.dataset });
       b.textContent = it ? "☆ Save" : "★ Saved";
     });
   }
