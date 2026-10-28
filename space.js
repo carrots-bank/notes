@@ -303,7 +303,7 @@
         const k = phase === "in" ? easeOut(lt) : 1 - easeOut(lt);
         if (k <= 0) continue;
         hex(tl.x, tl.y, s * (k > .999 ? 1.04 : k));
-        c.fillStyle = `rgba(9,14,30,${.94 * Math.min(1, k * 1.4)})`; c.fill();
+        c.fillStyle = "#090e1e"; c.fill();
         c.strokeStyle = `rgba(56,230,255,${.18 + .7 * (1 - Math.abs(lt - .5) * 2)})`; c.stroke();
       }
       const full = phase === "in" ? clamp((t - .7) / .3) : 1 - clamp(t / .25);
