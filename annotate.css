@@ -236,3 +236,6 @@ mark.wx-hit { background: var(--hl-yellow); color: inherit; padding: 0 1px; bord
 .lib-preview iframe { width: 100%; height: 78vh; border: 1px solid var(--border); border-radius: 8px; background: #fff; }
 .lib-preview img { max-width: 100%; border-radius: 8px; }
 .lib-text { white-space: pre-wrap; font: 13.5px/1.5 ui-monospace, Menlo, monospace; background: var(--code); padding: 12px; border-radius: 8px; max-height: 78vh; overflow: auto; }
+
+/* Tab switch animation (space.js tabFx) */
+.tab-fx { position: fixed; inset: 0; width: 100vw; height: 100vh; z-index: 1000; pointer-events: auto; }

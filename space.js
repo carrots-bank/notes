@@ -280,9 +280,58 @@
     const q = sidebar.querySelector(".sp-search");
     if (q && q.value) filterWorld(q.value);
   }
+  // Switching tabs: neon hex tiles flip in from the tab that was pressed, the tab changes under them, and they dissolve.
+  const TAB_NAMES = { mine: "MY SPACE", world: "WORLD", fin: "FINANCE TOWN" };
+  let tabBusy = false;
+  async function tabFx(tab, from, swap) {
+    if (matchMedia("(prefers-reduced-motion: reduce)").matches) return swap();
+    tabBusy = true;
+    const cv = document.createElement("canvas"), W = innerWidth, H = innerHeight, d = Math.min(2, devicePixelRatio || 1);
+    cv.className = "tab-fx"; cv.width = W * d; cv.height = H * d;
+    document.body.append(cv);
+    const c = cv.getContext("2d"); c.scale(d, d);
+    const s = 26, hw = Math.sqrt(3) * s, tiles = [];
+    for (let row = -1; row * s * 1.5 < H + s * 2; row++) for (let col = -1; col * hw < W + hw; col++) tiles.push({ x: col * hw + (row % 2 ? hw / 2 : 0), y: row * s * 1.5 });
+    const r = from.getBoundingClientRect(), o = { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    const maxD = Math.hypot(Math.max(o.x, W - o.x), Math.max(o.y, H - o.y));
+    const clamp = x => Math.min(1, Math.max(0, x)), easeOut = t => 1 - Math.pow(1 - t, 3);
+    const hex = (x, y, z) => { c.beginPath(); for (let i = 0; i < 6; i++) { const a = Math.PI / 3 * i + Math.PI / 6; c.lineTo(x + z * Math.cos(a), y + z * Math.sin(a)); } c.closePath(); };
+    function draw(phase, t) {
+      c.clearRect(0, 0, W, H); c.lineWidth = 1.4;
+      for (const tl of tiles) {
+        const lt = clamp(t * 1.7 - Math.hypot(tl.x - o.x, tl.y - o.y) / maxD * .7);
+        const k = phase === "in" ? easeOut(lt) : 1 - easeOut(lt);
+        if (k <= 0) continue;
+        hex(tl.x, tl.y, s * (k > .999 ? 1.04 : k));
+        c.fillStyle = `rgba(9,14,30,${.94 * Math.min(1, k * 1.4)})`; c.fill();
+        c.strokeStyle = `rgba(56,230,255,${.18 + .7 * (1 - Math.abs(lt - .5) * 2)})`; c.stroke();
+      }
+      const full = phase === "in" ? clamp((t - .7) / .3) : 1 - clamp(t / .25);
+      if (full > 0) {
+        const y = ((performance.now() / 6) % (H + 40)) - 20, g = c.createLinearGradient(0, y - 30, 0, y + 30);
+        g.addColorStop(0, "rgba(56,230,255,0)"); g.addColorStop(.5, `rgba(56,230,255,${.35 * full})`); g.addColorStop(1, "rgba(56,230,255,0)");
+        c.fillStyle = g; c.fillRect(0, y - 30, W, 60);
+        c.font = "500 14px ui-monospace, Menlo, monospace"; c.textAlign = "center"; c.fillStyle = `rgba(150,245,255,${full})`;
+        c.fillText(`LOADING // ${TAB_NAMES[tab] || tab.toUpperCase()}`, W / 2, H / 2 + 5);
+      }
+    }
+    const run = (ms, phase, hold) => new Promise(done => {
+      const t0 = performance.now();
+      (function frame(now) { const t = clamp((now - t0) / ms); draw(phase, hold ? 1 : t); t < 1 ? requestAnimationFrame(frame) : done(); })(t0);
+    });
+    try {
+      await run(560, "in");
+      swap();
+      await run(160, "in", true);
+      await run(560, "out");
+    } finally { cv.remove(); tabBusy = false; }
+  }
   document.addEventListener("click", e => {
     const t = e.target.closest("[data-tab]");
-    if (t && sidebar?.contains(t)) { ls.set("space_tab", t.dataset.tab); return rerender(); }
+    if (t && sidebar?.contains(t)) {
+      if (tabBusy || t.dataset.tab === tab()) return;
+      return tabFx(t.dataset.tab, t, () => { ls.set("space_tab", t.dataset.tab); rerender(); });
+    }
     const x = e.target.closest("[data-unsave]");
     if (x && sidebar?.contains(x)) { const it = index.items[x.dataset.unsave]; if (it) saveItems({ ...it, deleted: true }); }
   });
